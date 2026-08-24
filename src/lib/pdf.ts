@@ -6,19 +6,17 @@ import { Equipamento, LabelPrintOptions } from '../types';
 
 /**
  * Converte um código de barras Code 128 em Data URL de Alta Resolução (300+ DPI)
- * com Zona de Silêncio (Quiet Zone) obrigatória para leitura ótica instantânea.
+ * com Zona de Silêncio (Quiet Zone) obrigatória para leitura ótica instantânea por coletores e scanners.
  */
 export function generateBarcodeDataUrl(code: string, widthMultiplier: number = 3): string {
   const canvas = document.createElement('canvas');
   try {
-    // Renderização com alta densidade de pixels para que o driver da impressora
-    // não crie serrilhados ou interpolações cinzas que impeçam o laser de ler.
     JsBarcode(canvas, code, {
       format: 'CODE128',
-      width: widthMultiplier,     // Módulo de barra espesso (alta densidade)
-      height: 90,                  // Altura generosa para varredura do feixe laser
-      displayValue: false,         // O texto é renderizado com precisão vetorial pelo jsPDF
-      margin: 16,                  // ZONA DE SILÊNCIO OBRIGATÓRIA (Margem branca nas duas laterais)
+      width: widthMultiplier,
+      height: 80,
+      displayValue: false,
+      margin: 12,
       background: '#FFFFFF',
       lineColor: '#000000',
       flat: true,
@@ -38,7 +36,7 @@ export async function generateQRCodeDataUrl(text: string): Promise<string> {
     return await QRCode.toDataURL(text, {
       errorCorrectionLevel: 'M',
       margin: 1,
-      width: 250,
+      width: 300,
       color: {
         dark: '#000000',
         light: '#FFFFFF',
@@ -51,7 +49,7 @@ export async function generateQRCodeDataUrl(text: string): Promise<string> {
 }
 
 /**
- * Gera PDF de Etiquetas para Equipamentos (100% Otimizado para Impressoras Térmicas e Laser P&B)
+ * Gera PDF de Etiquetas para Equipamentos (Otimizado para Impressoras Térmicas e Laser P&B)
  */
 export async function generateLabelsPDF(
   items: Equipamento[],
@@ -60,7 +58,6 @@ export async function generateLabelsPDF(
 ): Promise<jsPDF> {
   const { template, copiesPerItem = 1 } = options;
 
-  // Monta lista com cópias
   const expandedItems: Equipamento[] = [];
   items.forEach(item => {
     for (let i = 0; i < copiesPerItem; i++) {
@@ -73,7 +70,73 @@ export async function generateLabelsPDF(
   }
 
   // =========================================================================
-  // MODELO: HÍBRIDA 70x40mm (Code 128 + QR Code 2D Simultâneos)
+  // MODELO: PADRÃO TÉRMICA 50x30mm (Mais Utilizado no Brasil)
+  // =========================================================================
+  if (template === 'PADRAO_50X30') {
+    const doc = new jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: [30, 50],
+    });
+
+    for (let index = 0; index < expandedItems.length; index++) {
+      const item = expandedItems[index];
+      if (index > 0) doc.addPage([30, 50], 'landscape');
+
+      const width = 50;
+      const height = 30;
+
+      // Fundo Branco
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, width, height, 'F');
+
+      // Cabeçalho Preto Sólido
+      doc.setFillColor(0, 0, 0);
+      doc.rect(0, 0, width, 5.0, 'F');
+
+      // Nome da Empresa
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(255, 255, 255);
+      doc.text(companyName.toUpperCase(), width / 2, 3.6, { align: 'center' });
+
+      // Nome do Equipamento
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(0, 0, 0);
+      const name = item.nome.length > 30 ? item.nome.substring(0, 28) + '...' : item.nome;
+      doc.text(name, width / 2, 8.5, { align: 'center' });
+
+      // Barcode Code 128
+      const barcodeImg = generateBarcodeDataUrl(item.codigo_patrimonial, 3);
+      if (barcodeImg) {
+        doc.addImage(barcodeImg, 'PNG', 2, 9.5, 46, 12);
+      }
+
+      // Código PAT
+      doc.setFont('courier', 'bold');
+      doc.setFontSize(9.5);
+      doc.setTextColor(0, 0, 0);
+      doc.text(item.codigo_patrimonial, width / 2, 24.5, { align: 'center' });
+
+      // Linha separadora
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.15);
+      doc.line(2, 25.8, width - 2, 25.8);
+
+      // Rodapé
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(5);
+      doc.setTextColor(0, 0, 0);
+      const footerText = `${item.setor_nome || 'Geral'}${item.responsavel ? ' • ' + item.responsavel : ''}`;
+      doc.text(footerText, width / 2, 28.5, { align: 'center' });
+    }
+
+    return doc;
+  }
+
+  // =========================================================================
+  // MODELO: HÍBRIDA 70x40mm (Code 128 + QR Code Simultâneos)
   // =========================================================================
   if (template === 'HIBRIDA_70X40') {
     const doc = new jsPDF({
@@ -93,11 +156,11 @@ export async function generateLabelsPDF(
       doc.setFillColor(255, 255, 255);
       doc.rect(0, 0, width, height, 'F');
 
-      // Topo Preto Sólido
+      // Faixa Superior
       doc.setFillColor(0, 0, 0);
       doc.rect(0, 0, width, 6.5, 'F');
 
-      // Nome da Empresa
+      // Empresa
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9.5);
       doc.setTextColor(255, 255, 255);
@@ -107,16 +170,16 @@ export async function generateLabelsPDF(
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(0, 0, 0);
-      const name = item.nome.length > 34 ? item.nome.substring(0, 32) + '...' : item.nome;
+      const name = item.nome.length > 36 ? item.nome.substring(0, 34) + '...' : item.nome;
       doc.text(name, 3, 11);
 
-      // Barcode Code 128 na Esquerda
+      // Barcode
       const barcodeImg = generateBarcodeDataUrl(item.codigo_patrimonial, 2.5);
       if (barcodeImg) {
         doc.addImage(barcodeImg, 'PNG', 2, 13, 44, 15);
       }
 
-      // QR Code 2D na Direita
+      // QR Code
       const qrImg = await generateQRCodeDataUrl(item.codigo_patrimonial);
       if (qrImg) {
         doc.addImage(qrImg, 'PNG', 49, 12.5, 18, 18);
@@ -128,7 +191,7 @@ export async function generateLabelsPDF(
       doc.setTextColor(0, 0, 0);
       doc.text(item.codigo_patrimonial, 24, 31, { align: 'center' });
 
-      // Linha separadora
+      // Linha
       doc.setDrawColor(0, 0, 0);
       doc.setLineWidth(0.2);
       doc.line(3, 33, width - 3, 33);
@@ -145,7 +208,7 @@ export async function generateLabelsPDF(
   }
 
   // =========================================================================
-  // MODELO: HÍBRIDA 50x30mm (Code 128 + Mini QR Code)
+  // MODELO: HÍBRIDA 50x30mm
   // =========================================================================
   if (template === 'HIBRIDA_50X30') {
     const doc = new jsPDF({
@@ -165,24 +228,23 @@ export async function generateLabelsPDF(
       doc.setFillColor(255, 255, 255);
       doc.rect(0, 0, width, height, 'F');
 
-      // Topo Preto Sólido
+      // Topo
       doc.setFillColor(0, 0, 0);
-      doc.rect(0, 0, width, 5.2, 'F');
+      doc.rect(0, 0, width, 5.0, 'F');
 
-      // Nome da Empresa
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(255, 255, 255);
-      doc.text(companyName.toUpperCase(), width / 2, 3.8, { align: 'center' });
+      doc.text(companyName.toUpperCase(), width / 2, 3.6, { align: 'center' });
 
-      // Nome do Equipamento
+      // Nome
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(6.5);
       doc.setTextColor(0, 0, 0);
       const name = item.nome.length > 28 ? item.nome.substring(0, 26) + '...' : item.nome;
       doc.text(name, 2.5, 8.8);
 
-      // Barcode Code 128
+      // Barcode
       const barcodeImg = generateBarcodeDataUrl(item.codigo_patrimonial, 2.2);
       if (barcodeImg) {
         doc.addImage(barcodeImg, 'PNG', 1.5, 9.8, 33, 11.5);
@@ -217,7 +279,7 @@ export async function generateLabelsPDF(
   }
 
   // =========================================================================
-  // MODELO 1: FOLHA A4 COM GRADE (24 etiquetas: 3 colunas x 8 linhas)
+  // MODELO: FOLHA A4 COM GRADE (24 etiquetas: 3 colunas x 8 linhas)
   // =========================================================================
   if (template === 'FOLHA_A4_GRADE') {
     const doc = new jsPDF({
@@ -248,50 +310,50 @@ export async function generateLabelsPDF(
       const x = marginLeft + col * (labelWidth + gapX);
       const y = marginTop + row * (labelHeight + gapY);
 
-      // Fundo Branco Puro
+      // Fundo Branco
       doc.setFillColor(255, 255, 255);
       doc.rect(x, y, labelWidth, labelHeight, 'F');
 
-      // Borda de corte nítida (100% preto)
+      // Borda de corte
       doc.setDrawColor(0, 0, 0);
       doc.setLineWidth(0.3);
       doc.roundedRect(x, y, labelWidth, labelHeight, 1, 1);
 
-      // Faixa Superior Preto Sólido (Alto Contraste)
+      // Faixa Superior
       doc.setFillColor(0, 0, 0);
       doc.rect(x, y, labelWidth, 5.5, 'F');
 
-      // Nome da Empresa em Branco Puro
+      // Empresa
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(255, 255, 255);
       doc.text(companyName.toUpperCase(), x + labelWidth / 2, y + 3.8, { align: 'center' });
 
-      // Nome do Equipamento (Preto Puro)
+      // Equipamento
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(7.5);
       doc.setTextColor(0, 0, 0);
       const truncatedName = item.nome.length > 28 ? item.nome.substring(0, 26) + '...' : item.nome;
       doc.text(truncatedName, x + labelWidth / 2, y + 9.2, { align: 'center' });
 
-      // Código de Barras de Alta Resolução com Zona de Silêncio
+      // Barcode
       const barcodeImg = generateBarcodeDataUrl(item.codigo_patrimonial, 3);
       if (barcodeImg) {
         doc.addImage(barcodeImg, 'PNG', x + 2, y + 10.5, labelWidth - 4, 12);
       }
 
-      // Código PAT Numérico em Fonte Monoespaçada Bold
+      // Código PAT
       doc.setFont('courier', 'bold');
       doc.setFontSize(9.5);
       doc.setTextColor(0, 0, 0);
       doc.text(item.codigo_patrimonial, x + labelWidth / 2, y + 25.5, { align: 'center' });
 
-      // Linha separadora sutil
+      // Linha
       doc.setDrawColor(0, 0, 0);
       doc.setLineWidth(0.15);
       doc.line(x + 3, y + 27, x + labelWidth - 3, y + 27);
 
-      // Rodapé: Setor / Local (Preto Puro)
+      // Rodapé
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(5.5);
       doc.setTextColor(0, 0, 0);
@@ -302,74 +364,8 @@ export async function generateLabelsPDF(
     return doc;
   }
 
-
   // =========================================================================
-  // MODELO 2: PADRÃO TÉRMICA 50x30mm (Rolo / Ribbon P&B)
-  // =========================================================================
-  if (template === 'PADRAO_50X30') {
-    const doc = new jsPDF({
-      orientation: 'landscape',
-      unit: 'mm',
-      format: [30, 50], // 50mm largura x 30mm altura
-    });
-
-    expandedItems.forEach((item, index) => {
-      if (index > 0) doc.addPage([30, 50], 'landscape');
-
-      const width = 50;
-      const height = 30;
-
-      // Fundo Branco Puro
-      doc.setFillColor(255, 255, 255);
-      doc.rect(0, 0, width, height, 'F');
-
-      // Cabeçalho Preto Sólido (Alto Contraste para Impressão Térmica)
-      doc.setFillColor(0, 0, 0);
-      doc.rect(0, 0, width, 5.2, 'F');
-
-      // Nome da Empresa em Branco
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8.5);
-      doc.setTextColor(255, 255, 255);
-      doc.text(companyName.toUpperCase(), width / 2, 3.8, { align: 'center' });
-
-      // Nome do Equipamento (Preto Puro)
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7.5);
-      doc.setTextColor(0, 0, 0);
-      const name = item.nome.length > 25 ? item.nome.substring(0, 23) + '...' : item.nome;
-      doc.text(name, width / 2, 8.8, { align: 'center' });
-
-      // Código de Barras Code 128 com Alta Densidade e Zona de Silêncio
-      const barcodeImg = generateBarcodeDataUrl(item.codigo_patrimonial, 3);
-      if (barcodeImg) {
-        doc.addImage(barcodeImg, 'PNG', 1.5, 9.8, width - 3, 12.5);
-      }
-
-      // Código PAT em Fonte Courier Bold (Legível para humanos e OCR)
-      doc.setFont('courier', 'bold');
-      doc.setFontSize(9.5);
-      doc.setTextColor(0, 0, 0);
-      doc.text(item.codigo_patrimonial, width / 2, 24.8, { align: 'center' });
-
-      // Linha separadora
-      doc.setDrawColor(0, 0, 0);
-      doc.setLineWidth(0.15);
-      doc.line(2, 26, width - 2, 26);
-
-      // Rodapé: Setor & Responsável (Preto Puro para não pontilhar na térmica)
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(5.5);
-      doc.setTextColor(0, 0, 0);
-      const footerText = `${item.setor_nome || 'MP CARGAS'}${item.responsavel ? ' • ' + item.responsavel : ''}`;
-      doc.text(footerText, width / 2, 28.5, { align: 'center' });
-    });
-
-    return doc;
-  }
-
-  // =========================================================================
-  // MODELO 3: COMPLETA TÉRMICA 70x40mm (Grandes Ativos com Nº Série)
+  // MODELO: COMPLETA TÉRMICA 70x40mm
   // =========================================================================
   if (template === 'COMPLETA_70X40') {
     const doc = new jsPDF({
@@ -388,23 +384,23 @@ export async function generateLabelsPDF(
       doc.setFillColor(255, 255, 255);
       doc.rect(0, 0, width, height, 'F');
 
-      // Faixa Superior Preto Sólido
+      // Faixa Superior
       doc.setFillColor(0, 0, 0);
       doc.rect(0, 0, width, 6.5, 'F');
 
-      // Nome da Empresa
+      // Empresa
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
       doc.setTextColor(255, 255, 255);
       doc.text(companyName.toUpperCase(), width / 2, 4.8, { align: 'center' });
 
-      // Nome do Equipamento
+      // Nome
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8.5);
       doc.setTextColor(0, 0, 0);
       doc.text(item.nome, width / 2, 11, { align: 'center' });
 
-      // Código de Barras com Altura Generosa (16mm)
+      // Barcode
       const barcodeImg = generateBarcodeDataUrl(item.codigo_patrimonial, 3);
       if (barcodeImg) {
         doc.addImage(barcodeImg, 'PNG', 3, 12.5, width - 6, 16);
@@ -416,12 +412,12 @@ export async function generateLabelsPDF(
       doc.setTextColor(0, 0, 0);
       doc.text(item.codigo_patrimonial, width / 2, 31.5, { align: 'center' });
 
-      // Linha separadora
+      // Linha
       doc.setDrawColor(0, 0, 0);
       doc.setLineWidth(0.2);
       doc.line(3, 33.5, width - 3, 33.5);
 
-      // Informações detalhadas em Preto Puro
+      // Rodapé
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(6);
       doc.setTextColor(0, 0, 0);
@@ -433,7 +429,7 @@ export async function generateLabelsPDF(
   }
 
   // =========================================================================
-  // MODELO 4: COMPACTA TÉRMICA 40x20mm (Pequenos Componentes)
+  // MODELO: COMPACTA TÉRMICA 40x20mm
   // =========================================================================
   const doc = new jsPDF({
     orientation: 'landscape',
@@ -447,11 +443,9 @@ export async function generateLabelsPDF(
     const width = 40;
     const height = 20;
 
-    // Fundo Branco
     doc.setFillColor(255, 255, 255);
     doc.rect(0, 0, width, height, 'F');
 
-    // Mini cabeçalho Preto Sólido
     doc.setFillColor(0, 0, 0);
     doc.rect(0, 0, width, 3.8, 'F');
     doc.setFont('helvetica', 'bold');
@@ -459,19 +453,16 @@ export async function generateLabelsPDF(
     doc.setTextColor(255, 255, 255);
     doc.text(companyName.toUpperCase(), width / 2, 2.8, { align: 'center' });
 
-    // Código de Barras
     const barcodeImg = generateBarcodeDataUrl(item.codigo_patrimonial, 2.5);
     if (barcodeImg) {
       doc.addImage(barcodeImg, 'PNG', 1, 4.5, width - 2, 9.5);
     }
 
-    // Código PAT
     doc.setFont('courier', 'bold');
     doc.setFontSize(7.5);
     doc.setTextColor(0, 0, 0);
     doc.text(item.codigo_patrimonial, width / 2, 16.2, { align: 'center' });
 
-    // Nome resumido
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(5);
     doc.setTextColor(0, 0, 0);
@@ -481,7 +472,6 @@ export async function generateLabelsPDF(
 
   return doc;
 }
-
 
 /**
  * Gera Relatório Gerencial em PDF
@@ -498,7 +488,6 @@ export function generateInventoryReportPDF(
     format: 'a4',
   });
 
-  // Cabeçalho institucional
   doc.setFillColor(17, 17, 17);
   doc.rect(0, 0, 297, 22, 'F');
 
@@ -519,7 +508,6 @@ export function generateInventoryReportPDF(
   doc.setFontSize(8.5);
   doc.text(`Gerado em: ${dataHora}`, 283, 12, { align: 'right' });
 
-  // Título do Relatório
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.setTextColor(20, 20, 20);
@@ -532,7 +520,6 @@ export function generateInventoryReportPDF(
     doc.text(`Filtros aplicados: ${filterDescription}`, 14, 37);
   }
 
-  // Tabela
   const tableData = items.map(item => [
     item.codigo_patrimonial,
     item.nome,
@@ -584,7 +571,6 @@ export function generateInventoryReportPDF(
     },
   });
 
-  // Rodapé com paginação
   const pageCount = (doc as any).internal.getNumberOfPages();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
