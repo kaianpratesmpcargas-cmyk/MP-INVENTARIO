@@ -8,6 +8,7 @@ import { Modal } from '../common/Modal';
 import { soundService } from '../../lib/sound';
 import { generateLabelsPDF } from '../../lib/pdf';
 import { generateBatchZPL, downloadZPLFile, copyZPLToClipboard } from '../../lib/zpl';
+import { getSupabaseClient } from '../../lib/supabase';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import {
   Scan,
@@ -143,8 +144,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     return () => clearInterval(interval);
   }, [isCameraActive, isBatchTransferOpen, isBatchMaintenanceOpen, isBatchStatusOpen, isBatchZPLOpen]);
 
-  // Executa processamento do código de barras
-  const handleProcessBarcode = (code: string) => {
+  // Executa processamento do código de barras (com consulta direta ao Supabase para busca universal)
+  const handleProcessBarcode = async (code: string) => {
     const rawCode = code.trim().replace(/[\r\n\t]/g, '');
     if (!rawCode) return;
 
@@ -153,7 +154,27 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     setLastScannedTime(nowTime);
     setDuplicateWarning(null);
 
-    const eq = findEquipmentByCode(rawCode);
+    let eq = findEquipmentByCode(rawCode);
+
+    // Se não encontrou na memória local, faz consulta direta no Supabase (busca em nuvem em tempo real)
+    if (!eq) {
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        try {
+          const { data: dbEq } = await supabase
+            .from('equipamentos')
+            .select('*')
+            .or(`codigo_patrimonial.ilike.${rawCode},codigo_barras.ilike.${rawCode},numero_serie.ilike.${rawCode}`)
+            .maybeSingle();
+
+          if (dbEq) {
+            eq = dbEq as Equipamento;
+          }
+        } catch (err) {
+          console.warn('Consulta direta Supabase no scanner:', err);
+        }
+      }
+    }
 
     if (scannerMode === 'QUICK' || scannerMode === 'DETAILED') {
       if (eq) {
