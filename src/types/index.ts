@@ -57,6 +57,7 @@ export type PermissionCode =
 export interface UserProfile {
   id: string;
   email: string;
+  password?: string;
   full_name: string;
   role: UserRole;
   status: UserStatus;

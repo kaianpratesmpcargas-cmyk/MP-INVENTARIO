@@ -1,5 +1,5 @@
 // ==========================================
-// MP CARGAS - Contexto de Autenticação e RBAC (com Sincronização Supabase)
+// MP CARGAS - Contexto de Autenticação e RBAC (com Sincronização Supabase Direta e Resiliente)
 // ==========================================
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
@@ -130,7 +130,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Login do Usuário
+   * Login do Usuário (Multi-Dispositivo)
    */
   const login = async (email: string, password?: string): Promise<{ success: boolean; message: string }> => {
     setIsLoading(true);
@@ -139,7 +139,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const supabase = getSupabaseClient();
 
-      // 1. Tenta autenticação via Supabase
+      // 1. Tenta autenticação nativa do Supabase Auth se ativo
       if (supabase && password) {
         try {
           const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
@@ -148,72 +148,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
 
           if (!authError && authData.user) {
-            // Busca o perfil correspondente
             const { data: profile } = await supabase
               .from('profiles')
               .select('*')
               .eq('id', authData.user.id)
               .maybeSingle();
 
-            let userProfile: UserProfile;
-
             if (profile) {
-              userProfile = profile as UserProfile;
-            } else {
-              // Se o perfil ainda não existir na tabela public.profiles, cria automaticamente
-              userProfile = {
-                id: authData.user.id,
-                email: emailClean,
-                full_name: authData.user.user_metadata?.full_name || emailClean.split('@')[0],
-                role: 'ADMINISTRADOR',
-                status: 'ATIVO',
-                department: authData.user.user_metadata?.department || '',
-                created_at: new Date().toISOString(),
-              };
-              await supabase.from('profiles').upsert(userProfile);
-            }
-
-            if (userProfile.status === 'PENDENTE') {
-              return { success: false, message: 'Seu cadastro está aguardando aprovação do administrador.' };
-            }
-            if (userProfile.status === 'BLOQUEADO' || userProfile.status === 'RECUSADO') {
-              return { success: false, message: 'Seu acesso está bloqueado ou foi recusado pela administração.' };
-            }
-
-            setCurrentUser(userProfile);
-            setUsers(prev => prev.some(u => u.id === userProfile.id) ? prev : [userProfile, ...prev]);
-            return { success: true, message: `Bem-vindo, ${userProfile.full_name}!` };
-          } else if (authError) {
-            console.warn('Supabase Auth error:', authError.message);
-            // Se o e-mail não foi confirmado pelo Supabase
-            if (authError.message.includes('Email not confirmed')) {
-              // Tenta verificar se há perfil criado diretamente
-              const { data: directProfile } = await supabase
-                .from('profiles')
-                .select('*')
-                .eq('email', emailClean)
-                .maybeSingle();
-
-              if (directProfile && directProfile.status === 'ATIVO') {
-                setCurrentUser(directProfile as UserProfile);
-                return { success: true, message: `Bem-vindo, ${directProfile.full_name}!` };
+              const userProfile = profile as UserProfile;
+              if (userProfile.status === 'PENDENTE') {
+                return { success: false, message: 'Seu cadastro está aguardando aprovação do administrador.' };
+              }
+              if (userProfile.status === 'BLOQUEADO' || userProfile.status === 'RECUSADO') {
+                return { success: false, message: 'Seu acesso está bloqueado ou foi recusado pela administração.' };
               }
 
-              return {
-                success: false,
-                message: 'Confirme o e-mail enviado ou desative a confirmação no painel do Supabase (Auth > Email > Confirm email).'
-              };
+              setCurrentUser(userProfile);
+              setUsers(prev => prev.some(u => u.id === userProfile.id) ? prev : [userProfile, ...prev]);
+              return { success: true, message: `Bem-vindo, ${userProfile.full_name}!` };
             }
           }
         } catch (sbErr) {
-          console.warn('Erro ao autenticar com Supabase:', sbErr);
+          console.warn('Supabase Auth error:', sbErr);
         }
       }
 
-      // 2. Tenta autenticação via perfis salvos no banco ou local
-      const foundUser = users.find(u => u.email.toLowerCase() === emailClean);
+      // 2. Consulta direta na tabela public.profiles do Supabase
+      if (supabase) {
+        try {
+          const { data: dbProfile, error: dbErr } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('email', emailClean)
+            .maybeSingle();
 
+          if (!dbErr && dbProfile) {
+            const userProfile = dbProfile as UserProfile;
+
+            // Se tem senha cadastrada no perfil, valida
+            if (userProfile.password && password && userProfile.password !== password) {
+              return { success: false, message: 'Senha incorreta. Tente novamente.' };
+            }
+
+            if (userProfile.status === 'PENDENTE') {
+              return { success: false, message: 'Seu cadastro está aguardando aprovação do Administrador.' };
+            }
+            if (userProfile.status === 'BLOQUEADO' || userProfile.status === 'RECUSADO') {
+              return { success: false, message: 'Seu acesso está bloqueado ou recusado.' };
+            }
+
+            // Atualiza last_login
+            const updatedProfile = { ...userProfile, last_login: new Date().toISOString() };
+            supabase.from('profiles').update({ last_login: updatedProfile.last_login }).eq('id', userProfile.id).then(() => {});
+
+            setCurrentUser(updatedProfile);
+            setUsers(prev => prev.map(u => u.id === userProfile.id ? updatedProfile : u));
+            return { success: true, message: `Bem-vindo, ${userProfile.full_name}!` };
+          }
+        } catch (err) {
+          console.warn('Erro ao consultar profiles no Supabase:', err);
+        }
+      }
+
+      // 3. Fallback para banco local (caso esteja offline)
+      const foundUser = users.find(u => u.email.toLowerCase() === emailClean);
       if (foundUser) {
+        if (foundUser.password && password && foundUser.password !== password) {
+          return { success: false, message: 'Senha incorreta. Tente novamente.' };
+        }
         if (foundUser.status === 'PENDENTE') {
           return { success: false, message: 'Seu acesso está PENDENTE de aprovação pelo Administrador.' };
         }
@@ -230,7 +232,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: true, message: `Bem-vindo, ${updatedUser.full_name}!` };
       }
 
-      // 3. Se não há nenhum usuário cadastrado ainda, cria automaticamente como primeiro Administrador!
+      // 4. Se não há nenhum usuário cadastrado no sistema (Primeiro Acesso):
+      // Cria a conta de Administrador automaticamente com o e-mail digitado!
       if (users.length === 0) {
         if (password && password.length >= 6) {
           const autoName = emailClean.split('@')[0].replace(/[._-]/g, ' ').toUpperCase() || 'Administrador';
@@ -250,7 +253,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Registro / Criação de Conta
+   * Registro / Criação de Conta (Sincronizado na Nuvem)
    */
   const requestAccess = async (
     fullName: string,
@@ -265,30 +268,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const supabase = getSupabaseClient();
       const isFirstUser = users.length === 0;
 
-      let cloudUserId = `user-${Date.now()}`;
+      // Gera UUID único para compatibilidade PostgreSQL
+      let newUserId = '00000000-0000-0000-0000-' + Date.now().toString().slice(-12).padStart(12, '0');
+      try {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+          newUserId = crypto.randomUUID();
+        }
+      } catch {}
 
-      // 1. Tenta registrar no Supabase Auth
+      // Tenta registrar no Supabase Auth
       if (supabase) {
         try {
-          const { data: authData, error: authError } = await supabase.auth.signUp({
+          const { data: authData } = await supabase.auth.signUp({
             email: emailClean,
             password,
             options: {
               data: { full_name: fullName.trim(), department: department || '' },
             },
           });
-
-          if (!authError && authData.user) {
-            cloudUserId = authData.user.id;
+          if (authData?.user?.id) {
+            newUserId = authData.user.id;
           }
         } catch (e) {
-          console.warn('Erro no signUp do Supabase:', e);
+          console.warn('Supabase auth.signUp:', e);
         }
       }
 
       const newUser: UserProfile = {
-        id: cloudUserId,
+        id: newUserId,
         email: emailClean,
+        password: password, // Guarda para autenticação direta resiliente
         full_name: fullName.trim(),
         role: isFirstUser ? 'ADMINISTRADOR' : 'CONSULTA',
         status: isFirstUser ? 'ATIVO' : 'PENDENTE',
@@ -296,12 +305,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         created_at: new Date().toISOString(),
       };
 
-      // Salva no banco de dados Supabase na nuvem
+      // Salva diretamente na tabela profiles do Supabase
       if (supabase) {
         try {
           await supabase.from('profiles').upsert(newUser);
         } catch (err) {
-          console.warn('Erro ao salvar perfil no Supabase:', err);
+          console.warn('Erro ao inserir perfil no Supabase:', err);
         }
       }
 

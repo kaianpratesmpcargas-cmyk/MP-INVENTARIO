@@ -22,9 +22,12 @@ DO $$ BEGIN
     CREATE TYPE movement_type AS ENUM ('CADASTRO', 'TRANSFERENCIA', 'ENVIO_MANUTENCAO', 'RETORNO_MANUTENCAO', 'ALTERACAO_STATUS', 'BAIXA', 'CONFERENCIA');
 EXCEPTION WHEN duplicate_object THEN null; END $$;
 
+ALTER TABLE IF EXISTS public.profiles DROP CONSTRAINT IF EXISTS profiles_id_fkey;
+
 CREATE TABLE IF NOT EXISTS public.profiles (
-    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email TEXT NOT NULL UNIQUE,
+    password TEXT,
     full_name TEXT NOT NULL,
     role user_role NOT NULL DEFAULT 'CONSULTA',
     status user_status NOT NULL DEFAULT 'PENDENTE',
@@ -35,6 +38,8 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
+
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS password TEXT;
 
 CREATE TABLE IF NOT EXISTS public.categorias (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
