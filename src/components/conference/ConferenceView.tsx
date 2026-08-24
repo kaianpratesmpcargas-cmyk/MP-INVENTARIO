@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Conferencia, ConferenciaItem } from '../../types';
 import { Modal } from '../common/Modal';
 import { EmptyState } from '../common/EmptyState';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import confetti from 'canvas-confetti';
 import {
   ClipboardCheck,
@@ -20,6 +21,10 @@ import {
   MapPin,
   Calendar,
   Zap,
+  Camera,
+  CameraOff,
+  Radio,
+  Trash2,
 } from 'lucide-react';
 
 export const ConferenceView: React.FC = () => {
@@ -54,14 +59,22 @@ export const ConferenceView: React.FC = () => {
   const [filterMode, setFilterMode] = useState<'TODOS' | 'ENCONTRADOS' | 'PENDENTES' | 'DIVERGENTES'>('TODOS');
   const [searchTerm, setSearchTerm] = useState('');
 
+  // Câmera Scanner na Conferência
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+  const lastScannedCodeRef = useRef<string>('');
+  const lastScanTimestampRef = useRef<number>(0);
+  const isProcessingRef = useRef<boolean>(false);
+
   const barcodeInputRef = useRef<HTMLInputElement | null>(null);
 
   // Mantém foco no input durante conferência ativa
   useEffect(() => {
-    if (activeSession && barcodeInputRef.current) {
+    if (activeSession && barcodeInputRef.current && !isCameraActive) {
       barcodeInputRef.current.focus();
     }
-  }, [activeSession, lastBipFeedback]);
+  }, [activeSession, lastBipFeedback, isCameraActive]);
 
   // Sincroniza sessão ativa com o context
   useEffect(() => {
@@ -75,6 +88,95 @@ export const ConferenceView: React.FC = () => {
       if (ongoing) setActiveSession(ongoing);
     }
   }, [conferencias]);
+
+  // Função central de processamento de bipe (Teclado/Leitor ou Câmera)
+  const processBeepItem = async (code: string, isFromCamera: boolean = false) => {
+    if (!activeSession) return;
+    const raw = code.trim().replace(/[\r\n\t]/g, '');
+    if (!raw) return;
+
+    const now = Date.now();
+    if (isFromCamera) {
+      if (isProcessingRef.current) return;
+      if (now - lastScanTimestampRef.current < 2200 && raw === lastScannedCodeRef.current) return;
+      if (now - lastScanTimestampRef.current < 1000) return;
+    }
+
+    isProcessingRef.current = true;
+    lastScanTimestampRef.current = now;
+    lastScannedCodeRef.current = raw;
+
+    setBarcodeInput('');
+    const res = await beepConferenciaItem(activeSession.id, raw);
+
+    setLastBipFeedback({
+      success: res.success,
+      message: res.message,
+      isDivergent: res.item?.divergente,
+    });
+
+    isProcessingRef.current = false;
+  };
+
+  // Câmera Toggle
+  const toggleCamera = async () => {
+    if (isCameraActive) {
+      if (html5QrCodeRef.current) {
+        try {
+          await html5QrCodeRef.current.stop();
+          html5QrCodeRef.current.clear();
+        } catch (e) {
+          console.warn(e);
+        }
+        html5QrCodeRef.current = null;
+      }
+      setIsCameraActive(false);
+      setCameraError(null);
+    } else {
+      setCameraError(null);
+      setIsCameraActive(true);
+
+      setTimeout(async () => {
+        try {
+          const qrCodeScanner = new Html5Qrcode('conference-camera-reader');
+          html5QrCodeRef.current = qrCodeScanner;
+
+          const config = {
+            fps: 15,
+            qrbox: { width: 280, height: 160 },
+            formatsToSupport: [
+              Html5QrcodeSupportedFormats.CODE_128,
+              Html5QrcodeSupportedFormats.CODE_39,
+              Html5QrcodeSupportedFormats.QR_CODE,
+              Html5QrcodeSupportedFormats.EAN_13,
+            ],
+          };
+
+          await qrCodeScanner.start(
+            { facingMode: 'environment' },
+            config,
+            (decodedText) => {
+              processBeepItem(decodedText, true);
+            },
+            () => {}
+          );
+        } catch (err: any) {
+          console.error('Erro ao abrir câmera na conferência:', err);
+          setCameraError('Não foi possível acessar a câmera do dispositivo. Verifique as permissões.');
+          setIsCameraActive(false);
+        }
+      }, 300);
+    }
+  };
+
+  // Limpeza de câmera ao desmontar
+  useEffect(() => {
+    return () => {
+      if (html5QrCodeRef.current) {
+        html5QrCodeRef.current.stop().catch(() => {});
+      }
+    };
+  }, []);
 
   const handleStartNewConference = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -101,21 +203,16 @@ export const ConferenceView: React.FC = () => {
   const handleBarcodeInputSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeSession || !barcodeInput.trim()) return;
-
-    const raw = barcodeInput.trim();
-    setBarcodeInput('');
-
-    const res = await beepConferenciaItem(activeSession.id, raw);
-    setLastBipFeedback({
-      success: res.success,
-      message: res.message,
-      isDivergent: res.item?.divergente,
-    });
+    processBeepItem(barcodeInput, false);
   };
 
   const handleFinish = async () => {
     if (!activeSession) return;
     if (window.confirm('Deseja realmente finalizar esta conferência de estoque?')) {
+      if (isCameraActive && html5QrCodeRef.current) {
+        await html5QrCodeRef.current.stop().catch(() => {});
+        setIsCameraActive(false);
+      }
       await finishConferencia(activeSession.id);
       try {
         confetti({
@@ -131,6 +228,10 @@ export const ConferenceView: React.FC = () => {
   const handleCancel = async () => {
     if (!activeSession) return;
     if (window.confirm('Deseja cancelar esta sessão de conferência?')) {
+      if (isCameraActive && html5QrCodeRef.current) {
+        await html5QrCodeRef.current.stop().catch(() => {});
+        setIsCameraActive(false);
+      }
       await cancelConferencia(activeSession.id);
       setActiveSession(null);
     }
@@ -156,7 +257,7 @@ export const ConferenceView: React.FC = () => {
   const availableLocais = locais.filter(l => l.setor_id === newSetorId);
 
   return (
-    <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn">
+    <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn pb-12">
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -165,7 +266,7 @@ export const ConferenceView: React.FC = () => {
             <span>Conferência de Inventário & Auditoria Física</span>
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Realize contagens físicas no galpão, bipagem em lote de equipamentos e detecção de divergências.
+            Realize contagens físicas no galpão, bipagem contínua via câmera ou leitor e detecção de divergências.
           </p>
         </div>
 
@@ -180,7 +281,7 @@ export const ConferenceView: React.FC = () => {
         )}
       </div>
 
-      {/* SESSÃO ATIVA EM ANDAMENTO (Requirement #34) */}
+      {/* SESSÃO ATIVA EM ANDAMENTO */}
       {activeSession ? (
         <div className="space-y-6 animate-fadeIn">
           {/* Card Principal da Sessão com Contadores em Tempo Real */}
@@ -201,16 +302,28 @@ export const ConferenceView: React.FC = () => {
 
               <div className="flex items-center gap-2.5">
                 <button
-                  onClick={handleCancel}
-                  className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold text-xs transition-colors"
+                  onClick={toggleCamera}
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-all ${
+                    isCameraActive
+                      ? 'bg-red-500 hover:bg-red-600 text-white'
+                      : 'bg-yellow-400 hover:bg-yellow-300 text-black shadow-yellow-glow'
+                  }`}
                 >
-                  Cancelar Sessão
+                  {isCameraActive ? <CameraOff className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
+                  <span>{isCameraActive ? 'FECHAR CÂMERA' : 'USAR CÂMERA'}</span>
+                </button>
+
+                <button
+                  onClick={handleCancel}
+                  className="px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-semibold text-xs transition-colors"
+                >
+                  Cancelar
                 </button>
                 <button
                   onClick={handleFinish}
-                  className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all hover:scale-[1.02]"
+                  className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold text-xs uppercase tracking-wider shadow-lg transition-all hover:scale-[1.02]"
                 >
-                  CONCLUIR AUDITORIA
+                  CONCLUIR
                 </button>
               </div>
             </div>
@@ -245,10 +358,38 @@ export const ConferenceView: React.FC = () => {
               </div>
             </div>
 
+            {/* Viewfinder da Câmera na Conferência */}
+            {isCameraActive && (
+              <div className="p-4 bg-zinc-950 rounded-2xl border border-yellow-400/50 space-y-3 animate-fadeIn">
+                <div className="flex items-center justify-between text-xs text-yellow-400 font-bold">
+                  <span className="flex items-center gap-2">
+                    <Radio className="w-4 h-4 animate-pulse text-red-500" />
+                    CÂMERA ATIVA • APONTE PARA O CÓDIGO DE BARRAS OU QR CODE
+                  </span>
+                  <button
+                    onClick={toggleCamera}
+                    className="text-zinc-400 hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="relative overflow-hidden rounded-xl bg-black max-w-sm mx-auto aspect-video">
+                  <div id="conference-camera-reader" className="w-full h-full" />
+                </div>
+              </div>
+            )}
+
+            {cameraError && (
+              <div className="p-3 bg-red-500/20 border border-red-500 text-red-300 text-xs font-semibold rounded-xl text-center">
+                {cameraError}
+              </div>
+            )}
+
             {/* Grande Campo de Bipagem Contínua da Conferência */}
             <form onSubmit={handleBarcodeInputSubmit} className="relative">
               <label className="block text-xs font-bold uppercase tracking-wider text-yellow-400 mb-2 text-center">
-                ESTAÇÃO DE BIPAGEM CONTÍNUA • LEITOR USB / CÓDIGO
+                ESTAÇÃO DE BIPAGEM CONTÍNUA • LEITOR USB / DIGITAÇÃO
               </label>
 
               <div className="relative max-w-xl mx-auto">
@@ -257,7 +398,7 @@ export const ConferenceView: React.FC = () => {
                   type="text"
                   value={barcodeInput}
                   onChange={e => setBarcodeInput(e.target.value)}
-                  placeholder="Bipe o código do equipamento (ex: PAT-000001)..."
+                  placeholder="Bipe ou digite o código (ex: PAT-000001)..."
                   className="w-full bg-black border-2 border-yellow-400 text-center font-mono font-black text-xl text-yellow-300 rounded-2xl py-3.5 px-6 focus:outline-none focus:ring-4 focus:ring-yellow-400/20 placeholder:text-zinc-600 placeholder:text-sm placeholder:font-sans"
                 />
                 <button
@@ -348,40 +489,43 @@ export const ConferenceView: React.FC = () => {
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <div
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 font-bold ${
+                      className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs flex-shrink-0 ${
                         item.encontrado
                           ? item.divergente
-                            ? 'bg-amber-500 text-black'
-                            : 'bg-emerald-500 text-white'
-                          : 'bg-slate-200 text-slate-400'
+                            ? 'bg-amber-500 text-white'
+                            : 'bg-emerald-600 text-white'
+                          : 'bg-slate-200 text-slate-500'
                       }`}
                     >
-                      {item.encontrado ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
+                      {item.encontrado ? <Check className="w-4 h-4 stroke-[3]" /> : <X className="w-3.5 h-3.5" />}
                     </div>
 
                     <div className="min-w-0">
-                      <div className="font-bold text-zinc-900 truncate flex items-center gap-2">
-                        <span className="font-mono text-yellow-600">{item.equipamento_codigo}</span>
-                        <span>{item.equipamento_nome}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-bold text-zinc-900">{item.equipamento_codigo}</span>
                         {item.divergente && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.2 bg-amber-200 text-amber-900 rounded">
-                            DIVERGENTE
+                          <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold uppercase">
+                            Divergente
                           </span>
                         )}
                       </div>
-                      <div className="text-[11px] text-slate-500">
-                        {item.setor_nome} • {item.local_nome} • Resp: {item.responsavel}
+                      <div className="font-semibold text-zinc-800 truncate">{item.equipamento_nome}</div>
+                      <div className="text-[11px] text-slate-400">
+                        {item.setor_nome} • Resp: {item.responsavel}
                       </div>
                     </div>
                   </div>
 
-                  <div className="text-right flex-shrink-0 text-[11px]">
+                  <div className="text-right flex-shrink-0">
                     {item.encontrado ? (
-                      <span className="font-bold text-emerald-700">
-                        Bipado em {new Date(item.data_bipagem!).toLocaleTimeString('pt-BR')}
-                      </span>
+                      <div>
+                        <span className="text-[11px] font-bold text-emerald-600 block">Conferido</span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {item.data_bipagem ? new Date(item.data_bipagem).toLocaleTimeString('pt-BR') : ''}
+                        </span>
+                      </div>
                     ) : (
-                      <span className="font-bold text-amber-700">Pendente de Leitura</span>
+                      <span className="text-[11px] font-semibold text-slate-400">Aguardando bip</span>
                     )}
                   </div>
                 </div>
@@ -390,48 +534,53 @@ export const ConferenceView: React.FC = () => {
           </div>
         </div>
       ) : (
-        /* HISTÓRICO DE CONFERÊNCIAS ANTERIORES */
-        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-6 space-y-4">
-          <h3 className="font-bold text-sm text-zinc-900">Histórico de Auditorias Realizadas</h3>
+        /* LISTA DE HISTÓRICO DE CONFERÊNCIAS PASSADAS */
+        <div className="bg-white p-6 rounded-3xl border border-slate-200/90 shadow-sm space-y-5">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+            <h3 className="text-sm font-extrabold text-zinc-900 uppercase tracking-wider">
+              Histórico de Sessões de Auditoria
+            </h3>
+            <span className="text-xs text-slate-400 font-semibold">{conferencias.length} sessões registradas</span>
+          </div>
 
           {conferencias.length > 0 ? (
             <div className="divide-y divide-slate-100">
-              {conferencias.map(conf => (
-                <div key={conf.id} className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-zinc-900 text-sm">{conf.titulo}</span>
-                      <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                        conf.status === 'FINALIZADA'
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-zinc-100 text-zinc-600'
-                      }`}>
-                        {conf.status}
-                      </span>
+              {conferencias.map(c => {
+                const percent = c.total_esperados > 0 ? Math.round((c.total_encontrados / c.total_esperados) * 100) : 100;
+                return (
+                  <div key={c.id} className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/50 p-3 rounded-2xl transition-colors">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-extrabold text-zinc-900 text-sm">{c.titulo}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          c.status === 'FINALIZADA' ? 'bg-emerald-100 text-emerald-800' : c.status === 'CANCELADA' ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {c.status}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-500 flex flex-wrap items-center gap-3">
+                        {c.setor_nome && <span>Setor: <strong className="text-zinc-800">{c.setor_nome}</strong></span>}
+                        <span>Realizada por: <strong className="text-zinc-800">{c.usuario_nome}</strong></span>
+                        <span>Data: {new Date(c.data_inicio).toLocaleDateString('pt-BR')}</span>
+                      </div>
                     </div>
-                    <div className="text-slate-500 text-[11px] mt-1">
-                      Início: {new Date(conf.data_inicio).toLocaleString('pt-BR')}
-                      {conf.data_fim && ` • Fim: ${new Date(conf.data_fim).toLocaleString('pt-BR')}`}
-                      {` • Auditor: ${conf.usuario_nome}`}
-                    </div>
-                  </div>
 
-                  <div className="flex items-center gap-4 text-right">
-                    <div className="font-mono">
-                      <span className="text-emerald-600 font-bold">{conf.total_encontrados}</span>
-                      <span className="text-slate-400"> / </span>
-                      <span className="font-bold text-zinc-900">{conf.total_esperados}</span>
-                      <div className="text-[10px] text-slate-400">Encontrados / Esperados</div>
+                    <div className="flex items-center gap-4 flex-shrink-0">
+                      <div className="text-right">
+                        <div className="text-sm font-mono font-black text-zinc-900">
+                          {c.total_encontrados} / {c.total_esperados}
+                        </div>
+                        <div className="text-[11px] text-slate-400">{percent}% de conformidade</div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <EmptyState
-              icon={<ClipboardCheck className="w-8 h-8 text-emerald-600" />}
               title="Nenhuma conferência realizada ainda"
-              description="Inicie uma nova contagem física por setor ou global para auditar seus ativos."
+              description="Inicie uma nova contagem física para auditar e comparar os itens do galpão com o sistema."
               actionText="+ Iniciar Conferência"
               onAction={() => setIsNewModalOpen(true)}
             />
@@ -443,24 +592,23 @@ export const ConferenceView: React.FC = () => {
       <Modal
         isOpen={isNewModalOpen}
         onClose={() => setIsNewModalOpen(false)}
-        title="Configurar Sessão de Conferência"
-        subtitle="Selecione o escopo da auditoria física"
-        maxWidth="lg"
+        title="Iniciar Nova Conferência de Estoque"
+        maxWidth="md"
       >
         <form onSubmit={handleStartNewConference} className="space-y-4 text-xs">
           <div>
-            <label className="block font-semibold text-zinc-700 mb-1">Título da Conferência *</label>
+            <label className="block font-semibold text-zinc-700 mb-1">Título / Identificador da Sessão *</label>
             <input
               type="text"
               value={newTitle}
               onChange={e => setNewTitle(e.target.value)}
-              placeholder="Ex: Auditoria Mensal Galpão Principal, Vistoria TI..."
               required
-              className="w-full bg-slate-50 border border-slate-200 text-zinc-900 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-yellow-400 font-medium"
+              placeholder="Ex: Auditoria Galpão Principal - Agosto/2026"
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:border-yellow-400 focus:bg-white"
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block font-semibold text-zinc-700 mb-1">Filtrar por Setor (Opcional)</label>
               <select
@@ -469,9 +617,9 @@ export const ConferenceView: React.FC = () => {
                   setNewSetorId(e.target.value);
                   setNewLocalId('');
                 }}
-                className="w-full bg-slate-50 border border-slate-200 text-zinc-900 rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:border-yellow-400"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400"
               >
-                <option value="">Todos os Setores (Geral)</option>
+                <option value="">Todos os Setores</option>
                 {setores.map(s => (
                   <option key={s.id} value={s.id}>{s.nome}</option>
                 ))}
@@ -479,14 +627,14 @@ export const ConferenceView: React.FC = () => {
             </div>
 
             <div>
-              <label className="block font-semibold text-zinc-700 mb-1">Filtrar por Local (Opcional)</label>
+              <label className="block font-semibold text-zinc-700 mb-1">Local Específico (Opcional)</label>
               <select
                 value={newLocalId}
                 onChange={e => setNewLocalId(e.target.value)}
                 disabled={!newSetorId}
-                className="w-full bg-slate-50 border border-slate-200 text-zinc-900 rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:border-yellow-400 disabled:opacity-50"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400 disabled:opacity-50"
               >
-                <option value="">Todas as Salas/Docas</option>
+                <option value="">Todos os Locais</option>
                 {availableLocais.map(l => (
                   <option key={l.id} value={l.id}>{l.nome}</option>
                 ))}
@@ -495,11 +643,11 @@ export const ConferenceView: React.FC = () => {
           </div>
 
           <div>
-            <label className="block font-semibold text-zinc-700 mb-1">Filtrar por Categoria (Opcional)</label>
+            <label className="block font-semibold text-zinc-700 mb-1">Filtrar Categoria (Opcional)</label>
             <select
               value={newCategoriaId}
               onChange={e => setNewCategoriaId(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 text-zinc-900 rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:border-yellow-400"
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400"
             >
               <option value="">Todas as Categorias</option>
               {categorias.map(c => (
@@ -511,27 +659,27 @@ export const ConferenceView: React.FC = () => {
           <div>
             <label className="block font-semibold text-zinc-700 mb-1">Observações da Auditoria</label>
             <textarea
+              rows={2}
               value={newObs}
               onChange={e => setNewObs(e.target.value)}
-              rows={2}
-              placeholder="Instruções para os conferentes..."
-              className="w-full bg-slate-50 border border-slate-200 text-zinc-900 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:border-yellow-400"
+              placeholder="Instruções para a equipe de conferência..."
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs focus:outline-none focus:border-yellow-400 focus:bg-white"
             />
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+          <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
             <button
               type="button"
               onClick={() => setIsNewModalOpen(false)}
-              className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50"
+              className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold shadow-sm transition-all"
+              className="px-5 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-xs uppercase tracking-wider shadow-yellow-glow"
             >
-              INICIAR CONFERÊNCIA AGORA
+              Iniciar Auditoria
             </button>
           </div>
         </form>
