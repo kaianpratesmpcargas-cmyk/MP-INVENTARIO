@@ -1,5 +1,5 @@
 // ==========================================
-// MP CARGAS - Contexto de Inventário e Operações (100% Sincronizado, IDs UUID Válidos e Tempo Real)
+// MP CARGAS - Contexto de Inventário e Operações (Sincronização Nuvem 100% à Prova de Falhas)
 // ==========================================
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
@@ -90,9 +90,8 @@ interface InventoryContextType {
 
 const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
 
-const STORAGE_KEY_PREFIX = 'mp_cargas_data_v3_';
+const STORAGE_KEY_PREFIX = 'mp_cargas_data_v4_';
 
-// Garante que todo objeto tenha um ID UUID válido
 function ensureUUID<T extends { id: string }>(item: T): T {
   if (!isValidUUID(item.id)) {
     return { ...item, id: generateValidUUID() };
@@ -100,7 +99,6 @@ function ensureUUID<T extends { id: string }>(item: T): T {
   return item;
 }
 
-// Sanitiza payload para Supabase (troca strings vazias de UUID por null)
 function sanitizeForSupabase(obj: Record<string, any>): Record<string, any> {
   const clean: Record<string, any> = { ...obj };
   const uuidFields = ['categoria_id', 'setor_id', 'local_id', 'equipamento_id', 'usuario_id', 'conferencia_id', 'created_by'];
@@ -200,7 +198,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [isCloudConnected, setIsCloudConnected] = useState<boolean>(true);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const isInitialSyncDone = useRef(false);
+  const isSyncingRef = useRef(false);
 
   // Atualiza som global
   useEffect(() => {
@@ -220,14 +218,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   useEffect(() => { localStorage.setItem(`${STORAGE_KEY_PREFIX}auditoria`, JSON.stringify(auditoria)); }, [auditoria]);
 
   // =========================================================================
-  // Sincronização Bidirecional Supabase
+  // Sincronização em Nuvem (Sem Re-criação de Conexão)
   // =========================================================================
   const fetchCloudData = useCallback(async () => {
     const supabase = getSupabaseClient();
-    if (!supabase) return;
+    if (!supabase || isSyncingRef.current) return;
 
     try {
+      isSyncingRef.current = true;
       setIsSyncing(true);
+
       const [
         { data: sbCat },
         { data: sbSet },
@@ -250,72 +250,72 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         supabase.from('configuracoes').select('*').maybeSingle(),
       ]);
 
-      let cloudHasData = false;
-
-      if (sbCat && sbCat.length > 0) { setCategorias(sbCat as Categoria[]); cloudHasData = true; }
-      if (sbSet && sbSet.length > 0) { setSetores(sbSet as Setor[]); cloudHasData = true; }
-      if (sbLoc && sbLoc.length > 0) { setLocais(sbLoc as Local[]); cloudHasData = true; }
+      if (sbCat && sbCat.length > 0) setCategorias(sbCat as Categoria[]);
+      if (sbSet && sbSet.length > 0) setSetores(sbSet as Setor[]);
+      if (sbLoc && sbLoc.length > 0) setLocais(sbLoc as Local[]);
 
       if (sbEq && sbEq.length > 0) {
-        const activeSets = (sbSet && sbSet.length > 0) ? sbSet : setores;
-        const activeCats = (sbCat && sbCat.length > 0) ? sbCat : categorias;
-        const activeLocs = (sbLoc && sbLoc.length > 0) ? sbLoc : locais;
+        const activeSets = sbSet || [];
+        const activeCats = sbCat || [];
+        const activeLocs = sbLoc || [];
 
         const enriched = sbEq.map((e: any) => ({
           ...e,
           setor_nome: e.setor_nome || activeSets.find((s: any) => s.id === e.setor_id)?.nome || 'Almoxarifado Geral',
-          categoria_nome: e.categoria_nome || activeCats.find((c: any) => c.id === e.categoria_id)?.nome || 'Informática',
+          categoria_nome: e.categoria_nome || activeCats.find((c: any) => c.id === e.categoria_id)?.nome || 'Geral',
           local_nome: e.local_nome || activeLocs.find((l: any) => l.id === e.local_id)?.nome || '',
         }));
         setEquipamentos(enriched as Equipamento[]);
-        cloudHasData = true;
       }
 
-      if (sbMov && sbMov.length > 0) { setMovimentacoes(sbMov as Movimentacao[]); cloudHasData = true; }
-      if (sbMan && sbMan.length > 0) { setManutencoes(sbMan as Manutencao[]); cloudHasData = true; }
-      if (sbConf && sbConf.length > 0) { setConferencias(sbConf as Conferencia[]); cloudHasData = true; }
-      if (sbAud && sbAud.length > 0) { setAuditoria(sbAud as AuditoriaLog[]); cloudHasData = true; }
-      if (sbCfg) { setConfiguracoes(sbCfg as ConfiguracoesSistema); cloudHasData = true; }
-
-      // Se o banco estiver vazio na nuvem, sobe os dados locais automaticamente
-      if (!cloudHasData && !isInitialSyncDone.current) {
-        console.log('Sincronizando dados locais para a nuvem Supabase...');
-        for (const c of categorias) await supabase.from('categorias').upsert(sanitizeForSupabase(c));
-        for (const s of setores) await supabase.from('setores').upsert(sanitizeForSupabase(s));
-        for (const l of locais) await supabase.from('locais').upsert(sanitizeForSupabase(l));
-        for (const e of equipamentos) await supabase.from('equipamentos').upsert(sanitizeForSupabase(e));
-      }
+      if (sbMov && sbMov.length > 0) setMovimentacoes(sbMov as Movimentacao[]);
+      if (sbMan && sbMan.length > 0) setManutencoes(sbMan as Manutencao[]);
+      if (sbConf && sbConf.length > 0) setConferencias(sbConf as Conferencia[]);
+      if (sbAud && sbAud.length > 0) setAuditoria(sbAud as AuditoriaLog[]);
+      if (sbCfg) setConfiguracoes(sbCfg as ConfiguracoesSistema);
 
       setIsCloudConnected(true);
     } catch (err) {
       console.warn('Erro ao carregar dados do Supabase:', err);
       setIsCloudConnected(false);
     } finally {
+      isSyncingRef.current = false;
       setIsSyncing(false);
-      isInitialSyncDone.current = true;
     }
-  }, [categorias, setores, locais, equipamentos]);
+  }, []);
 
+  // Inicialização, Escuta em Tempo Real e Polling de Garantia
   useEffect(() => {
     fetchCloudData();
 
     const supabase = getSupabaseClient();
     if (!supabase) return;
 
-    // Escuta alterações em tempo real de qualquer celular ou computador conectado
+    // Escuta em tempo real permanente
     const channel = supabase
-      .channel('realtime:inventory')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public' },
-        () => {
-          fetchCloudData();
-        }
-      )
+      .channel('realtime:all_inventory_master')
+      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+        fetchCloudData();
+      })
       .subscribe();
+
+    // Polling de garantia a cada 4 segundos (para celulares com tela bloqueada/background)
+    const interval = setInterval(() => {
+      fetchCloudData();
+    }, 4000);
+
+    // Sincroniza imediatamente quando a janela/aba ganhar foco
+    const handleFocus = () => {
+      fetchCloudData();
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
 
     return () => {
       supabase.removeChannel(channel);
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
     };
   }, [fetchCloudData]);
 
@@ -350,7 +350,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('auditoria').upsert(sanitizeForSupabase(newLog)).then(() => {});
+      supabase.from('auditoria').insert(sanitizeForSupabase(newLog)).then(() => {});
     }
   };
 
@@ -367,7 +367,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   /**
-   * Cadastrar Equipamento (Sincronizado na Nuvem)
+   * Cadastrar Equipamento (Gravação Direta no Supabase)
    */
   const createEquipamento = async (data: Partial<Equipamento>): Promise<Equipamento> => {
     let seq = configuracoes.sequencial_atual + 1;
@@ -442,8 +442,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('equipamentos').upsert(sanitizeForSupabase(newEquipamento)).then(() => {});
-      supabase.from('movimentacoes').upsert(sanitizeForSupabase(newMov)).then(() => {});
+      await supabase.from('equipamentos').insert(sanitizeForSupabase(newEquipamento));
+      await supabase.from('movimentacoes').insert(sanitizeForSupabase(newMov));
+      await fetchCloudData();
     }
 
     return newEquipamento;
@@ -453,28 +454,29 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
    * Atualizar dados de um Equipamento
    */
   const updateEquipamento = async (id: string, data: Partial<Equipamento>) => {
-    const prevEq = equipamentos.find(e => e.id === id);
+    const prevEq = equipamentos.find(e => e.id === id || e.codigo_patrimonial === id);
     if (!prevEq) return;
 
     const setor = data.setor_id ? setores.find(s => s.id === data.setor_id) : undefined;
     const local = data.local_id ? locais.find(l => l.id === data.local_id) : undefined;
     const categoria = data.categoria_id ? categorias.find(c => c.id === data.categoria_id) : undefined;
 
+    const nowIso = new Date().toISOString();
     const updated: Equipamento = {
       ...prevEq,
       ...data,
       categoria_nome: categoria ? categoria.nome : (data.categoria_nome || prevEq.categoria_nome),
       setor_nome: setor ? setor.nome : (data.setor_nome || prevEq.setor_nome),
       local_nome: local ? local.nome : (data.local_nome || prevEq.local_nome),
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
 
-    setEquipamentos(prev => prev.map(e => e.id === id ? updated : e));
+    setEquipamentos(prev => prev.map(e => (e.id === prevEq.id || e.codigo_patrimonial === prevEq.codigo_patrimonial) ? updated : e));
 
     logAuditoria(
       'EDICAO_EQUIPAMENTO',
       'equipamentos',
-      id,
+      prevEq.id,
       updated.codigo_patrimonial,
       `Editou dados cadastrais do equipamento ${updated.nome} (${updated.codigo_patrimonial})`,
       prevEq,
@@ -483,12 +485,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('equipamentos').upsert(sanitizeForSupabase(updated)).then(() => {});
+      await supabase.from('equipamentos').update(sanitizeForSupabase(updated)).eq('id', prevEq.id);
+      await fetchCloudData();
     }
   };
 
   /**
-   * Transferir Equipamento
+   * Transferir Equipamento (Gravação Imediata no Supabase)
    */
   const transferEquipamento = async (
     equipamentoId: string,
@@ -497,11 +500,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     newResponsavel: string,
     motivo?: string
   ) => {
-    const eq = equipamentos.find(e => e.id === equipamentoId);
+    const eq = equipamentos.find(e => e.id === equipamentoId || e.codigo_patrimonial === equipamentoId);
     if (!eq) return;
 
     const newSetor = setores.find(s => s.id === newSetorId);
     const newLocal = locais.find(l => l.id === newLocalId);
+    const nowIso = new Date().toISOString();
 
     const prevSetorNome = eq.setor_nome;
     const prevLocalNome = eq.local_nome;
@@ -511,13 +515,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       ...eq,
       setor_id: newSetorId,
       setor_nome: newSetor?.nome || '',
-      local_id: newLocalId,
+      local_id: newLocalId || '',
       local_nome: newLocal?.nome || '',
       responsavel: newResponsavel.trim(),
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
 
-    setEquipamentos(prev => prev.map(e => e.id === equipamentoId ? updated : e));
+    setEquipamentos(prev => prev.map(e => (e.id === eq.id || e.codigo_patrimonial === eq.codigo_patrimonial) ? updated : e));
 
     const newMov: Movimentacao = {
       id: generateValidUUID(),
@@ -532,7 +536,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       origem_responsavel: prevResp,
       destino_setor_id: newSetorId,
       destino_setor_nome: newSetor?.nome || '',
-      destino_local_id: newLocalId,
+      destino_local_id: newLocalId || '',
       destino_local_nome: newLocal?.nome || '',
       destino_responsavel: newResponsavel.trim(),
       status_anterior: eq.status,
@@ -540,7 +544,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       usuario_id: currentUser?.id,
       usuario_nome: currentUser?.full_name || 'Sistema',
       motivo: motivo || 'Transferência operacional de localização/responsável',
-      created_at: new Date().toISOString(),
+      created_at: nowIso,
     };
 
     setMovimentacoes(prev => [newMov, ...prev]);
@@ -557,8 +561,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('equipamentos').upsert(sanitizeForSupabase(updated)).then(() => {});
-      supabase.from('movimentacoes').upsert(sanitizeForSupabase(newMov)).then(() => {});
+      await supabase.from('equipamentos').update({
+        setor_id: newSetorId,
+        local_id: isValidUUID(newLocalId) ? newLocalId : null,
+        responsavel: newResponsavel.trim(),
+        updated_at: nowIso,
+      }).eq('id', eq.id);
+
+      await supabase.from('movimentacoes').insert(sanitizeForSupabase(newMov));
+      await fetchCloudData();
     }
   };
 
@@ -573,7 +584,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     previsaoRetorno?: string,
     custoEstimado?: number
   ) => {
-    const eq = equipamentos.find(e => e.id === equipamentoId);
+    const eq = equipamentos.find(e => e.id === equipamentoId || e.codigo_patrimonial === equipamentoId);
     if (!eq) return;
 
     const previousStatus = eq.status;
@@ -587,7 +598,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       updated_at: nowIso,
     };
 
-    setEquipamentos(prev => prev.map(e => e.id === equipamentoId ? updatedEq : e));
+    setEquipamentos(prev => prev.map(e => (e.id === eq.id || e.codigo_patrimonial === eq.codigo_patrimonial) ? updatedEq : e));
 
     const newTicket: Manutencao = {
       id: generateValidUUID(),
@@ -644,9 +655,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('equipamentos').upsert(sanitizeForSupabase(updatedEq)).then(() => {});
-      supabase.from('manutencoes').upsert(sanitizeForSupabase(newTicket)).then(() => {});
-      supabase.from('movimentacoes').upsert(sanitizeForSupabase(newMov)).then(() => {});
+      await supabase.from('equipamentos').update({ status: 'EM MANUTENÇÃO', data_envio_manutencao: nowIso, updated_at: nowIso }).eq('id', eq.id);
+      await supabase.from('manutencoes').insert(sanitizeForSupabase(newTicket));
+      await supabase.from('movimentacoes').insert(sanitizeForSupabase(newMov));
+      await fetchCloudData();
     }
   };
 
@@ -681,7 +693,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setManutencoes(prev => prev.map(m => m.id === manutencaoId ? updatedTicket : m));
 
-    const eq = equipamentos.find(e => e.id === ticket.equipamento_id);
+    const eq = equipamentos.find(e => e.id === ticket.equipamento_id || e.codigo_patrimonial === ticket.equipamento_codigo);
     if (eq) {
       const updatedEq: Equipamento = {
         ...eq,
@@ -691,7 +703,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updated_at: nowIso,
       };
 
-      setEquipamentos(prev => prev.map(e => e.id === eq.id ? updatedEq : e));
+      setEquipamentos(prev => prev.map(e => (e.id === eq.id || e.codigo_patrimonial === eq.codigo_patrimonial) ? updatedEq : e));
 
       const newMov: Movimentacao = {
         id: generateValidUUID(),
@@ -722,9 +734,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       const supabase = getSupabaseClient();
       if (supabase) {
-        supabase.from('equipamentos').upsert(sanitizeForSupabase(updatedEq)).then(() => {});
-        supabase.from('manutencoes').upsert(sanitizeForSupabase(updatedTicket)).then(() => {});
-        supabase.from('movimentacoes').upsert(sanitizeForSupabase(newMov)).then(() => {});
+        await supabase.from('equipamentos').update({ status: novoStatus, data_envio_manutencao: null, updated_at: nowIso }).eq('id', eq.id);
+        await supabase.from('manutencoes').update(sanitizeForSupabase(updatedTicket)).eq('id', ticket.id);
+        await supabase.from('movimentacoes').insert(sanitizeForSupabase(newMov));
+        await fetchCloudData();
       }
     }
   };
@@ -737,7 +750,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     motivo: DecommissionReason,
     observacao?: string
   ) => {
-    const eq = equipamentos.find(e => e.id === equipamentoId);
+    const eq = equipamentos.find(e => e.id === equipamentoId || e.codigo_patrimonial === equipamentoId);
     if (!eq) return;
 
     const previousStatus = eq.status;
@@ -752,7 +765,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       updated_at: nowIso,
     };
 
-    setEquipamentos(prev => prev.map(e => e.id === equipamentoId ? updated : e));
+    setEquipamentos(prev => prev.map(e => (e.id === eq.id || e.codigo_patrimonial === eq.codigo_patrimonial) ? updated : e));
 
     const newMov: Movimentacao = {
       id: generateValidUUID(),
@@ -783,13 +796,21 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('equipamentos').upsert(sanitizeForSupabase(updated)).then(() => {});
-      supabase.from('movimentacoes').upsert(sanitizeForSupabase(newMov)).then(() => {});
+      await supabase.from('equipamentos').update({
+        status: 'BAIXADO',
+        motivo_baixa: motivo,
+        data_baixa: nowIso,
+        observacao_baixa: observacao || null,
+        updated_at: nowIso,
+      }).eq('id', eq.id);
+
+      await supabase.from('movimentacoes').insert(sanitizeForSupabase(newMov));
+      await fetchCloudData();
     }
   };
 
   /**
-   * Alterar Status do Equipamento
+   * Alterar Status do Equipamento (Direto e Imediato no Supabase)
    */
   const changeEquipmentStatus = async (
     equipamentoId: string,
@@ -841,6 +862,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       try {
         await supabase.from('equipamentos').update({ status: newStatus, updated_at: nowIso }).eq('id', eq.id);
         await supabase.from('movimentacoes').insert(sanitizeForSupabase(newMov));
+        await fetchCloudData();
       } catch (err) {
         console.warn('Erro ao atualizar status no Supabase:', err);
       }
@@ -901,7 +923,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       return {
         id: m.id,
-        equipamento_id: equipamentoId,
+        equipamento_id: eq.id,
         titulo,
         descricao,
         tipo: m.tipo,
@@ -970,7 +992,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('conferencias').upsert(sanitizeForSupabase(newConf)).then(() => {});
+      await supabase.from('conferencias').insert(sanitizeForSupabase(newConf));
+      await fetchCloudData();
     }
 
     return newConf;
@@ -1014,7 +1037,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       soundService.playSuccess();
 
       const supabase = getSupabaseClient();
-      if (supabase) supabase.from('conferencias').upsert(sanitizeForSupabase(updatedConf)).then(() => {});
+      if (supabase) {
+        await supabase.from('conferencias').update(sanitizeForSupabase(updatedConf)).eq('id', conf.id);
+      }
 
       return { success: true, message: `Equipamento ${item.equipamento_codigo} conferido com sucesso!`, item: updatedItens[existingIndex] };
     }
@@ -1047,7 +1072,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     soundService.playWarning();
 
     const supabase = getSupabaseClient();
-    if (supabase) supabase.from('conferencias').upsert(sanitizeForSupabase(updatedConf)).then(() => {});
+    if (supabase) {
+      await supabase.from('conferencias').update(sanitizeForSupabase(updatedConf)).eq('id', conf.id);
+    }
 
     return { success: true, message: `Equipamento DIVERGENTE ${cleanCode} registrado na conferência!`, item: divergentItem, isNew: true };
   };
@@ -1066,7 +1093,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setConferencias(prev => prev.map(c => c.id === conferenciaId ? updated : c));
 
     const supabase = getSupabaseClient();
-    if (supabase) supabase.from('conferencias').upsert(sanitizeForSupabase(updated)).then(() => {});
+    if (supabase) {
+      await supabase.from('conferencias').update(sanitizeForSupabase(updated)).eq('id', conf.id);
+      await fetchCloudData();
+    }
   };
 
   const cancelConferencia = async (conferenciaId: string) => {
@@ -1076,12 +1106,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const supabase = getSupabaseClient();
     if (supabase) {
       const target = updated.find(c => c.id === conferenciaId);
-      if (target) supabase.from('conferencias').upsert(sanitizeForSupabase(target)).then(() => {});
+      if (target) {
+        await supabase.from('conferencias').update(sanitizeForSupabase(target)).eq('id', conferenciaId);
+        await fetchCloudData();
+      }
     }
   };
 
   /**
-   * Categorias, Setores, Locais
+   * Categorias, Setores, Locais (Gravação Imediata e Reativa)
    */
   const createCategoria = async (nome: string, descricao?: string): Promise<Categoria> => {
     const newCat: Categoria = {
@@ -1093,7 +1126,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setCategorias(prev => [...prev, newCat]);
 
     const supabase = getSupabaseClient();
-    if (supabase) supabase.from('categorias').upsert(sanitizeForSupabase(newCat)).then(() => {});
+    if (supabase) {
+      await supabase.from('categorias').insert(sanitizeForSupabase(newCat));
+      await fetchCloudData();
+    }
 
     return newCat;
   };
@@ -1101,7 +1137,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const deleteCategoria = async (id: string) => {
     setCategorias(prev => prev.filter(c => c.id !== id));
     const supabase = getSupabaseClient();
-    if (supabase) supabase.from('categorias').delete().eq('id', id).then(() => {});
+    if (supabase) {
+      await supabase.from('categorias').delete().eq('id', id);
+      await fetchCloudData();
+    }
   };
 
   const createSetor = async (nome: string, responsavel?: string, descricao?: string): Promise<Setor> => {
@@ -1115,7 +1154,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setSetores(prev => [...prev, newSetor]);
 
     const supabase = getSupabaseClient();
-    if (supabase) supabase.from('setores').upsert(sanitizeForSupabase(newSetor)).then(() => {});
+    if (supabase) {
+      await supabase.from('setores').insert(sanitizeForSupabase(newSetor));
+      await fetchCloudData();
+    }
 
     return newSetor;
   };
@@ -1126,8 +1168,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('setores').delete().eq('id', id).then(() => {});
-      supabase.from('locais').delete().eq('setor_id', id).then(() => {});
+      await supabase.from('setores').delete().eq('id', id);
+      await supabase.from('locais').delete().eq('setor_id', id);
+      await fetchCloudData();
     }
   };
 
@@ -1144,7 +1187,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setLocais(prev => [...prev, newLocal]);
 
     const supabase = getSupabaseClient();
-    if (supabase) supabase.from('locais').upsert(sanitizeForSupabase(newLocal)).then(() => {});
+    if (supabase) {
+      await supabase.from('locais').insert(sanitizeForSupabase(newLocal));
+      await fetchCloudData();
+    }
 
     return newLocal;
   };
@@ -1152,7 +1198,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const deleteLocal = async (id: string) => {
     setLocais(prev => prev.filter(l => l.id !== id));
     const supabase = getSupabaseClient();
-    if (supabase) supabase.from('locais').delete().eq('id', id).then(() => {});
+    if (supabase) {
+      await supabase.from('locais').delete().eq('id', id);
+      await fetchCloudData();
+    }
   };
 
   const updateConfiguracoes = async (newConfig: Partial<ConfiguracoesSistema>) => {
@@ -1160,7 +1209,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setConfiguracoes(updated);
 
     const supabase = getSupabaseClient();
-    if (supabase) supabase.from('configuracoes').upsert({ id: 'config-main', ...updated }).then(() => {});
+    if (supabase) {
+      await supabase.from('configuracoes').upsert({ id: 'config-main', ...updated });
+      await fetchCloudData();
+    }
   };
 
   const toggleSound = () => {
