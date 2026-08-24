@@ -14,6 +14,8 @@ import {
   CheckCircle2,
   ScanLine,
   X,
+  RefreshCw,
+  Cloud,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -44,7 +46,7 @@ export const Header: React.FC<HeaderProps> = ({
   onQuickSearch,
 }) => {
   const { currentUser, pendingUsersCount } = useAuth();
-  const { alertsCount } = useInventory();
+  const { alertsCount, isSyncing, isCloudConnected, syncWithCloud } = useInventory();
 
   const [isAlertsOpen, setIsAlertsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -105,6 +107,18 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right side actions */}
       <div className="flex items-center gap-2 ml-auto">
+        {/* Sync Button */}
+        <button
+          onClick={() => syncWithCloud()}
+          title={isSyncing ? 'Sincronizando com Supabase...' : 'Sincronizar dados em Tempo Real com a Nuvem'}
+          className="flex items-center gap-1.5 h-9 px-2.5 rounded-xl border border-zinc-200 bg-white hover:bg-zinc-50 text-zinc-700 text-xs font-semibold transition-all"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 text-emerald-600 ${isSyncing ? 'animate-spin' : ''}`} />
+          <span className="hidden lg:inline text-[11px] font-bold text-zinc-600">
+            {isSyncing ? 'Sincronizando...' : 'Tempo Real'}
+          </span>
+        </button>
+
         {/* Quick scan button */}
         <button
           onClick={() => onNavigate('scanner')}

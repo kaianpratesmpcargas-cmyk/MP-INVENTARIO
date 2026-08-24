@@ -1,8 +1,8 @@
 // ==========================================
-// MP CARGAS - Contexto de Inventário e Operações
+// MP CARGAS - Contexto de Inventário e Operações (Sincronização Nuvem Supabase em Tempo Real)
 // ==========================================
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   Equipamento,
   Categoria,
@@ -43,6 +43,9 @@ interface InventoryContextType {
   conferencias: Conferencia[];
   auditoria: AuditoriaLog[];
   configuracoes: ConfiguracoesSistema;
+  isCloudConnected: boolean;
+  isSyncing: boolean;
+  syncWithCloud: () => Promise<void>;
   
   // Equipamentos
   createEquipamento: (data: Partial<Equipamento>) => Promise<Equipamento>;
@@ -91,7 +94,6 @@ const STORAGE_KEY_PREFIX = 'mp_cargas_data_v2_';
 export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser } = useAuth();
 
-  // Estados com persistência local — todos iniciam vazios se não houver dado salvo
   const [configuracoes, setConfiguracoes] = useState<ConfiguracoesSistema>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}config`);
@@ -104,54 +106,54 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [categorias, setCategorias] = useState<Categoria[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}categorias`);
-      return saved ? JSON.parse(saved) : [];
+      return saved ? JSON.parse(saved) : INITIAL_CATEGORIAS;
     } catch {
-      return [];
+      return INITIAL_CATEGORIAS;
     }
   });
 
   const [setores, setSetores] = useState<Setor[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}setores`);
-      return saved ? JSON.parse(saved) : [];
+      return saved ? JSON.parse(saved) : INITIAL_SETORES;
     } catch {
-      return [];
+      return INITIAL_SETORES;
     }
   });
 
   const [locais, setLocais] = useState<Local[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}locais`);
-      return saved ? JSON.parse(saved) : [];
+      return saved ? JSON.parse(saved) : INITIAL_LOCAIS;
     } catch {
-      return [];
+      return INITIAL_LOCAIS;
     }
   });
 
   const [equipamentos, setEquipamentos] = useState<Equipamento[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}equipamentos`);
-      return saved ? JSON.parse(saved) : [];
+      return saved ? JSON.parse(saved) : INITIAL_EQUIPAMENTOS;
     } catch {
-      return [];
+      return INITIAL_EQUIPAMENTOS;
     }
   });
 
   const [movimentacoes, setMovimentacoes] = useState<Movimentacao[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}movimentacoes`);
-      return saved ? JSON.parse(saved) : [];
+      return saved ? JSON.parse(saved) : INITIAL_MOVIMENTACOES;
     } catch {
-      return [];
+      return INITIAL_MOVIMENTACOES;
     }
   });
 
   const [manutencoes, setManutencoes] = useState<Manutencao[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}manutencoes`);
-      return saved ? JSON.parse(saved) : [];
+      return saved ? JSON.parse(saved) : INITIAL_MANUTENCOES;
     } catch {
-      return [];
+      return INITIAL_MANUTENCOES;
     }
   });
 
@@ -167,63 +169,21 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [auditoria, setAuditoria] = useState<AuditoriaLog[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}auditoria`);
-      return saved ? JSON.parse(saved) : [];
+      return saved ? JSON.parse(saved) : INITIAL_AUDITORIA;
     } catch {
-      return [];
+      return INITIAL_AUDITORIA;
     }
   });
+
+  const [isCloudConnected, setIsCloudConnected] = useState<boolean>(true);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const isInitialMount = useRef(true);
 
   // Atualiza som global
   useEffect(() => {
     soundService.setEnabled(configuracoes.som_ativo);
     soundService.setVolume(configuracoes.volume_som);
   }, [configuracoes.som_ativo, configuracoes.volume_som]);
-
-  // Carrega dados da Nuvem (Supabase) na inicialização
-  useEffect(() => {
-    const fetchCloudData = async () => {
-      const supabase = getSupabaseClient();
-      if (!supabase) return;
-
-      try {
-        const [
-          { data: sbCat },
-          { data: sbSet },
-          { data: sbLoc },
-          { data: sbEq },
-          { data: sbMov },
-          { data: sbMan },
-          { data: sbConf },
-          { data: sbAud },
-          { data: sbCfg },
-        ] = await Promise.all([
-          supabase.from('categorias').select('*').order('nome'),
-          supabase.from('setores').select('*').order('nome'),
-          supabase.from('locais').select('*').order('nome'),
-          supabase.from('equipamentos').select('*').order('created_at', { ascending: false }),
-          supabase.from('movimentacoes').select('*').order('created_at', { ascending: false }),
-          supabase.from('manutencoes').select('*').order('created_at', { ascending: false }),
-          supabase.from('conferencias').select('*').order('created_at', { ascending: false }),
-          supabase.from('auditoria').select('*').order('created_at', { ascending: false }),
-          supabase.from('configuracoes').select('*').maybeSingle(),
-        ]);
-
-        if (sbCat && sbCat.length > 0) setCategorias(sbCat as Categoria[]);
-        if (sbSet && sbSet.length > 0) setSetores(sbSet as Setor[]);
-        if (sbLoc && sbLoc.length > 0) setLocais(sbLoc as Local[]);
-        if (sbEq && sbEq.length > 0) setEquipamentos(sbEq as Equipamento[]);
-        if (sbMov && sbMov.length > 0) setMovimentacoes(sbMov as Movimentacao[]);
-        if (sbMan && sbMan.length > 0) setManutencoes(sbMan as Manutencao[]);
-        if (sbConf && sbConf.length > 0) setConferencias(sbConf as Conferencia[]);
-        if (sbAud && sbAud.length > 0) setAuditoria(sbAud as AuditoriaLog[]);
-        if (sbCfg) setConfiguracoes(sbCfg as ConfiguracoesSistema);
-      } catch (err) {
-        console.warn('Erro ao carregar dados do Supabase:', err);
-      }
-    };
-
-    fetchCloudData();
-  }, []);
 
   // Persistência em LocalStorage
   useEffect(() => {
@@ -262,6 +222,104 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     localStorage.setItem(`${STORAGE_KEY_PREFIX}auditoria`, JSON.stringify(auditoria));
   }, [auditoria]);
 
+  // =========================================================================
+  // Sincronização com Supabase (Download e Auto-Upload inicial)
+  // =========================================================================
+  const fetchCloudData = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    try {
+      setIsSyncing(true);
+      const [
+        { data: sbCat },
+        { data: sbSet },
+        { data: sbLoc },
+        { data: sbEq },
+        { data: sbMov },
+        { data: sbMan },
+        { data: sbConf },
+        { data: sbAud },
+        { data: sbCfg },
+      ] = await Promise.all([
+        supabase.from('categorias').select('*').order('nome'),
+        supabase.from('setores').select('*').order('nome'),
+        supabase.from('locais').select('*').order('nome'),
+        supabase.from('equipamentos').select('*').order('created_at', { ascending: false }),
+        supabase.from('movimentacoes').select('*').order('created_at', { ascending: false }),
+        supabase.from('manutencoes').select('*').order('created_at', { ascending: false }),
+        supabase.from('conferencias').select('*').order('created_at', { ascending: false }),
+        supabase.from('auditoria').select('*').order('created_at', { ascending: false }),
+        supabase.from('configuracoes').select('*').maybeSingle(),
+      ]);
+
+      let hasCloudData = false;
+
+      if (sbCat && sbCat.length > 0) { setCategorias(sbCat as Categoria[]); hasCloudData = true; }
+      if (sbSet && sbSet.length > 0) { setSetores(sbSet as Setor[]); hasCloudData = true; }
+      if (sbLoc && sbLoc.length > 0) { setLocais(sbLoc as Local[]); hasCloudData = true; }
+      if (sbEq && sbEq.length > 0) { setEquipamentos(sbEq as Equipamento[]); hasCloudData = true; }
+      if (sbMov && sbMov.length > 0) { setMovimentacoes(sbMov as Movimentacao[]); hasCloudData = true; }
+      if (sbMan && sbMan.length > 0) { setManutencoes(sbMan as Manutencao[]); hasCloudData = true; }
+      if (sbConf && sbConf.length > 0) { setConferencias(sbConf as Conferencia[]); hasCloudData = true; }
+      if (sbAud && sbAud.length > 0) { setAuditoria(sbAud as AuditoriaLog[]); hasCloudData = true; }
+      if (sbCfg) { setConfiguracoes(sbCfg as ConfiguracoesSistema); hasCloudData = true; }
+
+      // Se o banco na nuvem estiver 100% vazio (primeira inicialização do sistema):
+      // Sobe automaticamente os dados locais (categorias padrão, setores, configurações e equipamentos)
+      if (!hasCloudData && isInitialMount.current) {
+        console.log('Banco de dados Supabase vazio detectado. Enviando dados padrão para a nuvem...');
+        try {
+          if (INITIAL_CATEGORIAS.length > 0) await supabase.from('categorias').upsert(INITIAL_CATEGORIAS);
+          if (INITIAL_SETORES.length > 0) await supabase.from('setores').upsert(INITIAL_SETORES);
+          if (INITIAL_LOCAIS.length > 0) await supabase.from('locais').upsert(INITIAL_LOCAIS);
+          if (INITIAL_EQUIPAMENTOS.length > 0) await supabase.from('equipamentos').upsert(INITIAL_EQUIPAMENTOS);
+          if (INITIAL_CONFIG) await supabase.from('configuracoes').upsert({ id: 'config-main', ...INITIAL_CONFIG });
+          if (INITIAL_MOVIMENTACOES.length > 0) await supabase.from('movimentacoes').upsert(INITIAL_MOVIMENTACOES);
+        } catch (seedErr) {
+          console.warn('Auto-seed Supabase:', seedErr);
+        }
+      }
+
+      setIsCloudConnected(true);
+    } catch (err) {
+      console.warn('Erro ao carregar dados do Supabase:', err);
+      setIsCloudConnected(false);
+    } finally {
+      setIsSyncing(false);
+      isInitialMount.current = false;
+    }
+  }, []);
+
+  // Inicialização e Inscrição em Tempo Real (Supabase Realtime)
+  useEffect(() => {
+    fetchCloudData();
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    // Escuta alterações de qualquer dispositivo em tempo real
+    const channel = supabase
+      .channel('realtime:all_inventory')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public' },
+        (payload) => {
+          console.log('⚡ Realtime alteração detectada no banco:', payload.table);
+          fetchCloudData();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchCloudData]);
+
+  const syncWithCloud = async () => {
+    await fetchCloudData();
+  };
+
   // Helper para adicionar log de auditoria
   const logAuditoria = (
     acao: string,
@@ -287,16 +345,17 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       created_at: new Date().toISOString(),
     };
     setAuditoria(prev => [newLog, ...prev]);
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('auditoria').upsert(newLog).then(() => {});
+    }
   };
 
-  /**
-   * Visualização prévia do próximo código PAT (ex: PAT-000013)
-   */
   const getNextCodePreview = (): string => {
     let nextSeq = configuracoes.sequencial_atual + 1;
     let testCode = formatPatrimonioCode(configuracoes.prefixo_patrimonio, nextSeq, configuracoes.digitos_sequencial);
 
-    // Evita duplicatas caso já exista
     while (equipamentos.some(e => e.codigo_patrimonial === testCode)) {
       nextSeq++;
       testCode = formatPatrimonioCode(configuracoes.prefixo_patrimonio, nextSeq, configuracoes.digitos_sequencial);
@@ -306,7 +365,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   /**
-   * Cadastrar Equipamento com Sequencial Automático
+   * Cadastrar Equipamento (Sincronizado na Nuvem)
    */
   const createEquipamento = async (data: Partial<Equipamento>): Promise<Equipamento> => {
     let seq = configuracoes.sequencial_atual + 1;
@@ -323,8 +382,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const newEquipamento: Equipamento = {
       id: `eq-${Date.now()}`,
-      codigo_patrimonial: codigo,
-      codigo_barras: codigo,
+      codigo_patrimonial: data.codigo_patrimonial || codigo,
+      codigo_barras: data.codigo_barras || codigo,
       nome: data.nome || 'Equipamento sem nome',
       categoria_id: data.categoria_id || '',
       categoria_nome: categoria?.nome || '',
@@ -347,13 +406,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       updated_at: new Date().toISOString(),
     };
 
-    // Atualiza sequencial nas configurações
     setConfiguracoes(prev => ({ ...prev, sequencial_atual: seq }));
-
-    // Insere equipamento
     setEquipamentos(prev => [newEquipamento, ...prev]);
 
-    // Registra movimentação de cadastro
     const newMov: Movimentacao = {
       id: `mov-${Date.now()}`,
       equipamento_id: newEquipamento.id,
@@ -373,7 +428,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
     setMovimentacoes(prev => [newMov, ...prev]);
 
-    // Log de Auditoria
     logAuditoria(
       'CADASTRO_EQUIPAMENTO',
       'equipamentos',
@@ -383,6 +437,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       undefined,
       newEquipamento
     );
+
+    // Salva na nuvem (Supabase)
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('equipamentos').upsert(newEquipamento).then(() => {});
+      supabase.from('movimentacoes').upsert(newMov).then(() => {});
+      supabase.from('configuracoes').upsert({ id: 'config-main', ...configuracoes, sequencial_atual: seq }).then(() => {});
+    }
 
     return newEquipamento;
   };
@@ -418,10 +480,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       prevEq,
       updated
     );
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('equipamentos').upsert(updated).then(() => {});
+    }
   };
 
   /**
-   * Transferir Equipamento de Setor / Local / Responsável
+   * Transferir Equipamento
    */
   const transferEquipamento = async (
     equipamentoId: string,
@@ -452,7 +519,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setEquipamentos(prev => prev.map(e => e.id === equipamentoId ? updated : e));
 
-    // Registra movimentação de transferência
     const newMov: Movimentacao = {
       id: `mov-${Date.now()}`,
       equipamento_id: eq.id,
@@ -488,6 +554,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       { setor: prevSetorNome, local: prevLocalNome, responsavel: prevResp },
       { setor: newSetor?.nome, local: newLocal?.nome, responsavel: newResponsavel }
     );
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('equipamentos').upsert(updated).then(() => {});
+      supabase.from('movimentacoes').upsert(newMov).then(() => {});
+    }
   };
 
   /**
@@ -538,7 +610,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setManutencoes(prev => [newTicket, ...prev]);
 
-    // Movimentação
     const newMov: Movimentacao = {
       id: `mov-${Date.now()}`,
       equipamento_id: eq.id,
@@ -570,6 +641,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       { status: previousStatus },
       { status: 'EM MANUTENÇÃO', problema }
     );
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('equipamentos').upsert(updatedEq).then(() => {});
+      supabase.from('manutencoes').upsert(newTicket).then(() => {});
+      supabase.from('movimentacoes').upsert(newMov).then(() => {});
+    }
   };
 
   /**
@@ -589,7 +667,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const nowIso = new Date().toISOString();
 
-    // Atualiza o ticket
     const updatedTicket: Manutencao = {
       ...ticket,
       servico_realizado: servicoRealizado,
@@ -604,7 +681,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setManutencoes(prev => prev.map(m => m.id === manutencaoId ? updatedTicket : m));
 
-    // Atualiza equipamento
     const eq = equipamentos.find(e => e.id === ticket.equipamento_id);
     if (eq) {
       const updatedEq: Equipamento = {
@@ -617,7 +693,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       setEquipamentos(prev => prev.map(e => e.id === eq.id ? updatedEq : e));
 
-      // Movimentação
       const newMov: Movimentacao = {
         id: `mov-${Date.now()}`,
         equipamento_id: eq.id,
@@ -644,11 +719,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         { status: 'EM MANUTENÇÃO' },
         { status: novoStatus, servicoRealizado, custoReal }
       );
+
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        supabase.from('equipamentos').upsert(updatedEq).then(() => {});
+        supabase.from('manutencoes').upsert(updatedTicket).then(() => {});
+        supabase.from('movimentacoes').upsert(newMov).then(() => {});
+      }
     }
   };
 
   /**
-   * Dar Baixa no Equipamento (Não apaga o registro, marca como BAIXADO)
+   * Dar Baixa no Equipamento
    */
   const decommissionEquipamento = async (
     equipamentoId: string,
@@ -698,6 +780,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       { status: previousStatus },
       { status: 'BAIXADO', motivo, observacao }
     );
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('equipamentos').upsert(updated).then(() => {});
+      supabase.from('movimentacoes').upsert(newMov).then(() => {});
+    }
   };
 
   /**
@@ -747,11 +835,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       { status: previousStatus },
       { status: newStatus }
     );
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('equipamentos').upsert(updated).then(() => {});
+      supabase.from('movimentacoes').upsert(newMov).then(() => {});
+    }
   };
 
-  /**
-   * Busca Rápida de Equipamento por Código PAT, Código de Barras ou Nº Série
-   */
   const findEquipmentByCode = (code: string): Equipamento | null => {
     const clean = sanitizeBarcodeValue(code).toUpperCase();
     if (!clean) return null;
@@ -763,9 +854,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     ) || null;
   };
 
-  /**
-   * Recupera Linha do Tempo e Histórico do Equipamento
-   */
   const getEquipmentHistory = (equipamentoId: string): HistoricoEvento[] => {
     const eq = equipamentos.find(e => e.id === equipamentoId);
     if (!eq) return [];
@@ -820,7 +908,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   /**
-   * Iniciar Sessão de Conferência de Inventário
+   * Conferências
    */
   const createConferencia = async (
     titulo: string,
@@ -829,7 +917,6 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     categoriaId?: string,
     observacoes?: string
   ): Promise<Conferencia> => {
-    // Filtra equipamentos esperados (excluindo BAIXADO)
     let filtered = equipamentos.filter(e => e.status !== 'BAIXADO');
 
     if (setorId) filtered = filtered.filter(e => e.setor_id === setorId);
@@ -853,12 +940,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       encontrado: false,
     }));
 
-    const newConfId = `conf-${Date.now()}`;
-    itens.forEach(i => i.conferencia_id = newConfId);
-
-    const newConferencia: Conferencia = {
-      id: newConfId,
-      titulo: titulo.trim(),
+    const newConf: Conferencia = {
+      id: `conf-${Date.now()}`,
+      titulo,
       setor_id: setorId,
       setor_nome: setor?.nome,
       local_id: localId,
@@ -868,66 +952,53 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       total_esperados: itens.length,
       total_encontrados: 0,
       total_pendentes: itens.length,
+      itens,
       status: 'EM_ANDAMENTO',
       usuario_id: currentUser?.id || 'sys',
-      usuario_nome: currentUser?.full_name || 'Operador',
-      observacoes,
+      usuario_nome: currentUser?.full_name || 'Sistema',
       data_inicio: new Date().toISOString(),
-      itens,
+      observacoes,
       created_at: new Date().toISOString(),
     };
 
-    setConferencias(prev => [newConferencia, ...prev]);
+    newConf.itens.forEach(i => i.conferencia_id = newConf.id);
 
-    logAuditoria(
-      'INICIO_CONFERENCIA',
-      'conferencias',
-      newConferencia.id,
-      undefined,
-      `Iniciou conferência "${newConferencia.titulo}" com ${newConferencia.total_esperados} itens esperados.`
-    );
+    setConferencias(prev => [newConf, ...prev]);
 
-    return newConferencia;
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('conferencias').upsert(newConf).then(() => {});
+    }
+
+    return newConf;
   };
 
-  /**
-   * Bipagem em tempo real na Conferência
-   */
-  const beepConferenciaItem = async (
-    conferenciaId: string,
-    code: string
-  ): Promise<{ success: boolean; message: string; item?: ConferenciaItem; isNew?: boolean }> => {
+  const beepConferenciaItem = async (conferenciaId: string, code: string) => {
     const conf = conferencias.find(c => c.id === conferenciaId);
     if (!conf || conf.status !== 'EM_ANDAMENTO') {
-      soundService.playError();
-      return { success: false, message: 'Conferência não encontrada ou já encerrada.' };
+      return { success: false, message: 'Conferência não encontrada ou já finalizada.' };
     }
 
     const cleanCode = sanitizeBarcodeValue(code).toUpperCase();
-    const itemIndex = conf.itens?.findIndex(i => 
-      i.equipamento_codigo.toUpperCase() === cleanCode
-    );
+    const existingIndex = conf.itens.findIndex(i => i.equipamento_codigo.toUpperCase() === cleanCode);
 
-    if (itemIndex !== undefined && itemIndex >= 0 && conf.itens) {
-      const item = conf.itens[itemIndex];
+    if (existingIndex >= 0) {
+      const item = conf.itens[existingIndex];
       if (item.encontrado) {
         soundService.playWarning();
-        return { success: true, message: `O item ${item.equipamento_codigo} já foi conferido nesta sessão.`, item, isNew: false };
+        return { success: false, message: `Equipamento ${item.equipamento_codigo} já foi conferido nesta sessão.`, item };
       }
 
-      // Marca como encontrado
-      const updatedItem: ConferenciaItem = {
+      const updatedItens = [...conf.itens];
+      updatedItens[existingIndex] = {
         ...item,
         encontrado: true,
         data_bipagem: new Date().toISOString(),
-        bipado_por: currentUser?.full_name || 'Operador',
+        bipado_por: currentUser?.full_name || 'Conferente',
       };
 
-      const updatedItens = [...conf.itens];
-      updatedItens[itemIndex] = updatedItem;
-
       const totalEncontrados = updatedItens.filter(i => i.encontrado).length;
-      const totalPendentes = updatedItens.length - totalEncontrados;
+      const totalPendentes = updatedItens.filter(i => !i.encontrado && !i.divergente).length;
 
       const updatedConf: Conferencia = {
         ...conf,
@@ -939,158 +1010,172 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setConferencias(prev => prev.map(c => c.id === conferenciaId ? updatedConf : c));
       soundService.playSuccess();
 
-      return { success: true, message: `Item ${item.equipamento_codigo} conferido com sucesso!`, item: updatedItem, isNew: true };
+      const supabase = getSupabaseClient();
+      if (supabase) supabase.from('conferencias').upsert(updatedConf).then(() => {});
+
+      return { success: true, message: `Equipamento ${item.equipamento_codigo} conferido com sucesso!`, item: updatedItens[existingIndex] };
     }
 
-    // Se o item não estava na lista esperada, verifica se existe no inventário geral (Divergência)
-    const eqGeral = findEquipmentByCode(cleanCode);
-    if (eqGeral) {
-      const divergentItem: ConferenciaItem = {
-        id: `conf-item-div-${Date.now()}`,
-        conferencia_id: conferenciaId,
-        equipamento_id: eqGeral.id,
-        equipamento_codigo: eqGeral.codigo_patrimonial,
-        equipamento_nome: eqGeral.nome,
-        setor_nome: eqGeral.setor_nome || '-',
-        local_nome: eqGeral.local_nome || '-',
-        responsavel: eqGeral.responsavel || '-',
-        status_equipamento: eqGeral.status,
-        encontrado: true,
-        divergente: true,
-        data_bipagem: new Date().toISOString(),
-        bipado_por: currentUser?.full_name || 'Operador',
-      };
+    // Item divergente
+    const eq = findEquipmentByCode(cleanCode);
+    const divergentItem: ConferenciaItem = {
+      id: `conf-item-div-${Date.now()}`,
+      conferencia_id: conferenciaId,
+      equipamento_id: eq?.id || 'avulso',
+      equipamento_codigo: cleanCode,
+      equipamento_nome: eq?.nome || 'Equipamento Não Cadastrado / Fora de Escopo',
+      setor_nome: eq?.setor_nome || 'Divergente',
+      local_nome: eq?.local_nome || 'Divergente',
+      responsavel: eq?.responsavel || '-',
+      status_equipamento: eq?.status || 'EM ESTOQUE',
+      encontrado: true,
+      data_bipagem: new Date().toISOString(),
+      bipado_por: currentUser?.full_name || 'Conferente',
+      divergente: true,
+    };
 
-      const updatedItens = [divergentItem, ...(conf.itens || [])];
-      const totalEncontrados = updatedItens.filter(i => i.encontrado).length;
-      const totalPendentes = Math.max(0, conf.total_esperados - (totalEncontrados - 1));
+    const updatedConf: Conferencia = {
+      ...conf,
+      itens: [divergentItem, ...conf.itens],
+      total_encontrados: conf.total_encontrados + 1,
+    };
 
-      const updatedConf: Conferencia = {
-        ...conf,
-        itens: updatedItens,
-        total_encontrados: totalEncontrados,
-        total_pendentes: totalPendentes,
-      };
+    setConferencias(prev => prev.map(c => c.id === conferenciaId ? updatedConf : c));
+    soundService.playWarning();
 
-      setConferencias(prev => prev.map(c => c.id === conferenciaId ? updatedConf : c));
-      soundService.playSuccess();
+    const supabase = getSupabaseClient();
+    if (supabase) supabase.from('conferencias').upsert(updatedConf).then(() => {});
 
-      return {
-        success: true,
-        message: `Item DIVERGENTE ${eqGeral.codigo_patrimonial} detectado (cadastrado em ${eqGeral.setor_nome}).`,
-        item: divergentItem,
-        isNew: true
-      };
-    }
-
-    soundService.playError();
-    return { success: false, message: `Código ${cleanCode} não encontrado no sistema.` };
+    return { success: true, message: `Equipamento DIVERGENTE ${cleanCode} registrado na conferência!`, item: divergentItem, isNew: true };
   };
 
-  /**
-   * Finalizar Conferência
-   */
   const finishConferencia = async (conferenciaId: string, observacoes?: string) => {
     const conf = conferencias.find(c => c.id === conferenciaId);
     if (!conf) return;
 
-    const nowIso = new Date().toISOString();
     const updated: Conferencia = {
       ...conf,
-      status: 'FINALIZADA',
-      data_fim: nowIso,
-      observacoes: observacoes ? `${conf.observacoes ? conf.observacoes + ' | ' : ''}${observacoes}` : conf.observacoes,
+      status: 'CONCLUIDA',
+      data_fim: new Date().toISOString(),
+      observacoes: observacoes ? `${conf.observacoes || ''}\n${observacoes}`.trim() : conf.observacoes,
     };
 
     setConferencias(prev => prev.map(c => c.id === conferenciaId ? updated : c));
 
-    logAuditoria(
-      'FINALIZACAO_CONFERENCIA',
-      'conferencias',
-      conf.id,
-      undefined,
-      `Finalizou conferência "${conf.titulo}". Encontrados: ${conf.total_encontrados}/${conf.total_esperados} (Pendentes: ${conf.total_pendentes})`
-    );
+    const supabase = getSupabaseClient();
+    if (supabase) supabase.from('conferencias').upsert(updated).then(() => {});
+  };
+
+  const cancelConferencia = async (conferenciaId: string) => {
+    const updated = conferencias.map(c => c.id === conferenciaId ? { ...c, status: 'CANCELADA' as const, data_fim: new Date().toISOString() } : c);
+    setConferencias(updated);
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const target = updated.find(c => c.id === conferenciaId);
+      if (target) supabase.from('conferencias').upsert(target).then(() => {});
+    }
   };
 
   /**
-   * Cancelar Conferência
+   * Cadastros de Apoio (Categorias, Setores, Locais)
    */
-  const cancelConferencia = async (conferenciaId: string) => {
-    setConferencias(prev => prev.map(c => c.id === conferenciaId ? { ...c, status: 'CANCELADA', data_fim: new Date().toISOString() } : c));
-  };
-
-  // CRUD Cadastros de Apoio
   const createCategoria = async (nome: string, descricao?: string): Promise<Categoria> => {
     const newCat: Categoria = {
       id: `cat-${Date.now()}`,
       nome: nome.trim(),
-      descricao,
+      descricao: descricao?.trim(),
       created_at: new Date().toISOString(),
     };
     setCategorias(prev => [...prev, newCat]);
+
+    const supabase = getSupabaseClient();
+    if (supabase) supabase.from('categorias').upsert(newCat).then(() => {});
+
     return newCat;
+  };
+
+  const deleteCategoria = async (id: string) => {
+    setCategorias(prev => prev.filter(c => c.id !== id));
+    const supabase = getSupabaseClient();
+    if (supabase) supabase.from('categorias').delete().eq('id', id).then(() => {});
   };
 
   const createSetor = async (nome: string, responsavel?: string, descricao?: string): Promise<Setor> => {
     const newSetor: Setor = {
-      id: `set-${Date.now()}`,
+      id: `setor-${Date.now()}`,
       nome: nome.trim(),
-      responsavel_padrao: responsavel,
-      descricao,
+      responsavel_padrao: responsavel?.trim(),
+      descricao: descricao?.trim(),
       created_at: new Date().toISOString(),
     };
     setSetores(prev => [...prev, newSetor]);
+
+    const supabase = getSupabaseClient();
+    if (supabase) supabase.from('setores').upsert(newSetor).then(() => {});
+
     return newSetor;
+  };
+
+  const deleteSetor = async (id: string) => {
+    setSetores(prev => prev.filter(s => s.id !== id));
+    setLocais(prev => prev.filter(l => l.setor_id !== id));
+
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      supabase.from('setores').delete().eq('id', id).then(() => {});
+      supabase.from('locais').delete().eq('setor_id', id).then(() => {});
+    }
   };
 
   const createLocal = async (setorId: string, nome: string, descricao?: string): Promise<Local> => {
     const setor = setores.find(s => s.id === setorId);
     const newLocal: Local = {
-      id: `loc-${Date.now()}`,
+      id: `local-${Date.now()}`,
       setor_id: setorId,
       setor_nome: setor?.nome,
       nome: nome.trim(),
-      descricao,
+      descricao: descricao?.trim(),
       created_at: new Date().toISOString(),
     };
     setLocais(prev => [...prev, newLocal]);
+
+    const supabase = getSupabaseClient();
+    if (supabase) supabase.from('locais').upsert(newLocal).then(() => {});
+
     return newLocal;
-  };
-
-  const deleteCategoria = async (id: string) => {
-    setCategorias(prev => prev.filter(c => c.id !== id));
-  };
-
-  const deleteSetor = async (id: string) => {
-    setSetores(prev => prev.filter(s => s.id !== id));
   };
 
   const deleteLocal = async (id: string) => {
     setLocais(prev => prev.filter(l => l.id !== id));
+    const supabase = getSupabaseClient();
+    if (supabase) supabase.from('locais').delete().eq('id', id).then(() => {});
   };
 
-  // Configurações
   const updateConfiguracoes = async (newConfig: Partial<ConfiguracoesSistema>) => {
-    setConfiguracoes(prev => ({
-      ...prev,
-      ...newConfig,
-      updated_at: new Date().toISOString(),
-    }));
+    const updated = { ...configuracoes, ...newConfig, updated_at: new Date().toISOString() };
+    setConfiguracoes(updated);
+
+    const supabase = getSupabaseClient();
+    if (supabase) supabase.from('configuracoes').upsert({ id: 'config-main', ...updated }).then(() => {});
   };
 
   const toggleSound = () => {
-    setConfiguracoes(prev => {
-      const nextVal = !prev.som_ativo;
-      soundService.setEnabled(nextVal);
-      return { ...prev, som_ativo: nextVal };
-    });
+    const newValue = !configuracoes.som_ativo;
+    updateConfiguracoes({ som_ativo: newValue });
+    soundService.setEnabled(newValue);
+    if (newValue) soundService.playSuccess();
   };
 
-  // Cálculo de Alertas Inteligentes
-  const overdueMaintenance = equipamentos.filter(e => e.status === 'EM MANUTENÇÃO' && (e.dias_em_manutencao || 0) > 30).length;
-  const noResponsible = equipamentos.filter(e => e.status !== 'BAIXADO' && (!e.responsavel || e.responsavel.trim() === '')).length;
-  const noLocation = equipamentos.filter(e => e.status !== 'BAIXADO' && (!e.local_id || e.local_id.trim() === '' || !e.local_nome)).length;
+  // Alertas
+  const now = new Date();
+  const overdueMaintenance = manutencoes.filter(m => {
+    if (m.concluida || !m.previsao_retorno) return false;
+    return new Date(m.previsao_retorno) < now;
+  }).length;
+
+  const noResponsible = equipamentos.filter(e => !e.responsavel || e.responsavel.trim() === '').length;
+  const noLocation = equipamentos.filter(e => !e.local_id || e.local_id === '').length;
   const awaitingDiscard = equipamentos.filter(e => e.status === 'AGUARDANDO DESCARTE').length;
 
   const alertsCount = {
@@ -1113,6 +1198,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         conferencias,
         auditoria,
         configuracoes,
+        isCloudConnected,
+        isSyncing,
+        syncWithCloud,
         createEquipamento,
         updateEquipamento,
         transferEquipamento,
