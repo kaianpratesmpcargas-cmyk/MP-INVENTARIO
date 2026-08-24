@@ -37,6 +37,8 @@ import {
   CheckSquare,
   X,
   Code,
+  PackageCheck,
+  Check,
 } from 'lucide-react';
 
 interface ScannerViewProps {
@@ -51,7 +53,7 @@ interface ScannerViewProps {
 }
 
 export type ScanState = 'IDLE' | 'FOUND' | 'NOT_FOUND';
-export type ScannerMode = 'SINGLE' | 'BATCH';
+export type ScannerMode = 'QUICK' | 'DETAILED' | 'BATCH';
 
 interface ScannedBatchItem {
   equipment: Equipamento;
@@ -75,14 +77,15 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     manutencoes,
     setores,
     locais,
+    createEquipamento,
     transferEquipamento,
     sendToMaintenance,
     changeEquipmentStatus,
   } = useInventory();
   const { hasPermission } = useAuth();
 
-  // Modo de Operação (Individual vs Multi-Bipagem)
-  const [scannerMode, setScannerMode] = useState<ScannerMode>('SINGLE');
+  // Modo de Operação (Rápido 1-Clique vs Detalhado vs Multi-Bipagem)
+  const [scannerMode, setScannerMode] = useState<ScannerMode>('QUICK');
 
   // Estados de Leitura
   const [scanInput, setScanInput] = useState('');
@@ -91,6 +94,11 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   const [foundEquipment, setFoundEquipment] = useState<Equipamento | null>(null);
   const [lastScannedTime, setLastScannedTime] = useState<string | null>(null);
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
+
+  // Cadastro Rápido Inline (quando bipar código novo no modo rápido)
+  const [quickName, setQuickName] = useState('');
+  const [quickSetorId, setQuickSetorId] = useState('');
+  const [quickResp, setQuickResp] = useState('');
 
   // Lote de Bipagem Contínua
   const [batchItems, setBatchItems] = useState<ScannedBatchItem[]>([]);
@@ -123,7 +131,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   // Input Ref com Auto-focus permanente
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Mantém o input permanentemente focado para leitores USB
   const keepFocus = () => {
     if (inputRef.current && !isCameraActive && !isBatchTransferOpen && !isBatchMaintenanceOpen && !isBatchStatusOpen && !isBatchZPLOpen) {
       inputRef.current.focus();
@@ -148,8 +155,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
 
     const eq = findEquipmentByCode(rawCode);
 
-    if (scannerMode === 'SINGLE') {
-      // MODO INDIVIDUAL
+    if (scannerMode === 'QUICK' || scannerMode === 'DETAILED') {
       if (eq) {
         setFoundEquipment(eq);
         setScanState('FOUND');
@@ -162,6 +168,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         setFoundEquipment(null);
         setScanState('NOT_FOUND');
         soundService.playError();
+        // Preenche sugestão de nome
+        setQuickName('');
+        setQuickSetorId(setores[0]?.id || '');
+        setQuickResp(setores[0]?.responsavel_padrao || '');
       }
     } else {
       // MODO MULTI-BIPAGEM EM LOTE
@@ -170,7 +180,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
       }
 
       if (eq) {
-        // Verifica duplicidade no lote
         const alreadyInBatch = batchItems.some(item => item.equipment.id === eq.id);
         if (alreadyInBatch) {
           setDuplicateWarning(`O item ${eq.codigo_patrimonial} (${eq.nome}) já está no lote!`);
@@ -196,7 +205,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     }
   };
 
-  // Reset para aguardar próxima leitura
+  // Reset
   const handleResetScanner = () => {
     setScanState('IDLE');
     setFoundEquipment(null);
@@ -205,7 +214,90 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     keepFocus();
   };
 
-  // Remover item do lote
+  // Ação Rápida 1: Transferência Imediata de Setor com 1 Clique
+  const handleQuickTransferSetor = async (newSetorId: string) => {
+    if (!foundEquipment) return;
+    const targetSetor = setores.find(s => s.id === newSetorId);
+    if (!targetSetor) return;
+
+    // Encontra primeiro local do setor ou usa padrão
+    const local = locais.find(l => l.setor_id === newSetorId);
+    await transferEquipamento(
+      foundEquipment.id,
+      newSetorId,
+      local?.id || '',
+      targetSetor.responsavel_padrao || foundEquipment.responsavel,
+      'Transferência rápida via Estação Scanner'
+    );
+
+    const updatedEq = {
+      ...foundEquipment,
+      setor_id: newSetorId,
+      setor_nome: targetSetor.nome,
+      local_id: local?.id || '',
+      local_nome: local?.nome || '',
+      responsavel: targetSetor.responsavel_padrao || foundEquipment.responsavel,
+    };
+    setFoundEquipment(updatedEq);
+
+    soundService.playSuccess();
+    setActionSuccessMsg(`Transferido para ${targetSetor.nome} com sucesso!`);
+    setTimeout(() => setActionSuccessMsg(null), 3000);
+  };
+
+  // Ação Rápida 2: Enviar Manutenção com 1 Clique
+  const handleQuickSendMaintenance = async () => {
+    if (!foundEquipment) return;
+    await sendToMaintenance(
+      foundEquipment.id,
+      'Equipamento com defeito / Danificado',
+      'Abertura rápida pelo operador na estação scanner'
+    );
+
+    setFoundEquipment({ ...foundEquipment, status: 'EM MANUTENÇÃO' });
+    soundService.playWarning();
+    setActionSuccessMsg('Equipamento enviado para MANUTENÇÃO!');
+    setTimeout(() => setActionSuccessMsg(null), 3000);
+  };
+
+  // Ação Rápida 3: Devolver ao Estoque com 1 Clique
+  const handleQuickReturnToStock = async () => {
+    if (!foundEquipment) return;
+    await changeEquipmentStatus(foundEquipment.id, 'EM ESTOQUE', 'Item guardado no almoxarifado/estoque');
+    setFoundEquipment({ ...foundEquipment, status: 'EM ESTOQUE' });
+    soundService.playSuccess();
+    setActionSuccessMsg('Status atualizado para DISPONÍVEL EM ESTOQUE!');
+    setTimeout(() => setActionSuccessMsg(null), 3000);
+  };
+
+  // Cadastro Rápido em 5 segundos
+  const handleQuickSaveNew = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickName.trim()) return;
+
+    const targetSetor = setores.find(s => s.id === quickSetorId) || setores[0];
+    const targetLocal = locais.find(l => l.setor_id === targetSetor?.id);
+
+    const created = await createEquipamento({
+      codigo_patrimonial: scannedCode,
+      codigo_barras: scannedCode,
+      nome: quickName.trim(),
+      setor_id: targetSetor?.id || '',
+      setor_nome: targetSetor?.nome || 'Geral',
+      local_id: targetLocal?.id || '',
+      local_nome: targetLocal?.nome || '',
+      responsavel: quickResp.trim() || targetSetor?.responsavel_padrao || 'Operador',
+      status: 'EM ESTOQUE',
+    });
+
+    setFoundEquipment(created);
+    setScanState('FOUND');
+    soundService.playSuccess();
+    setActionSuccessMsg(`Item ${created.nome} cadastrado com sucesso!`);
+    setTimeout(() => setActionSuccessMsg(null), 3000);
+  };
+
+  // Remover do lote
   const handleRemoveFromBatch = (id: string) => {
     setBatchItems(prev => prev.filter(item => item.equipment.id !== id));
   };
@@ -309,6 +401,26 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     link.click();
   };
 
+  // Imprimir PDF
+  const handlePrintLabel = async (eq: Equipamento) => {
+    try {
+      const doc = await generateLabelsPDF([eq], {
+        template: 'PADRAO_50X30',
+        includeCompany: true,
+        includeName: true,
+        includeCode: true,
+        includeBarcode: true,
+        includeSector: true,
+        includeSerial: true,
+        copiesPerItem: 1,
+      }, configuracoes.empresa_nome);
+      doc.autoPrint();
+      window.open(doc.output('bloburl'), '_blank');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // Imprimir PDF do Lote
   const handlePrintBatchPDF = async () => {
     if (batchItems.length === 0) return;
@@ -327,7 +439,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     window.open(doc.output('bloburl'), '_blank');
   };
 
-  // Controle de Câmera com html5-qrcode
+  // Câmera
   const toggleCamera = async () => {
     if (isCameraActive) {
       if (html5QrCodeRef.current) {
@@ -394,48 +506,65 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn pb-12">
       {/* Mensagem Flutuante de Sucesso */}
       {actionSuccessMsg && (
-        <div className="p-4 bg-emerald-500 text-white rounded-2xl shadow-xl flex items-center gap-3 font-bold text-xs animate-fadeIn">
-          <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+        <div className="p-4 bg-emerald-600 text-white rounded-2xl shadow-xl flex items-center gap-3 font-extrabold text-sm animate-fadeIn">
+          <CheckCircle2 className="w-6 h-6 flex-shrink-0" />
           <span>{actionSuccessMsg}</span>
         </div>
       )}
 
-      {/* Top Header da Estação */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900 text-white p-5 sm:p-6 rounded-3xl border border-zinc-800 shadow-xl">
-        <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-2xl bg-yellow-400 text-black flex items-center justify-center font-black shadow-yellow-glow flex-shrink-0">
-            <Scan className="w-6 h-6" />
+      {/* Top Header da Estação com Seletor de Modo Simplificado */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900 text-white p-4 sm:p-5 rounded-3xl border border-zinc-800 shadow-xl">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-yellow-400 text-black flex items-center justify-center font-black shadow-yellow-glow flex-shrink-0">
+            <Scan className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-base sm:text-lg font-extrabold flex items-center gap-2 leading-none">
-              <span>ESTAÇÃO SCANNER OPERACIONAL</span>
+            <div className="text-base font-extrabold flex items-center gap-2 leading-none">
+              <span>ESTAÇÃO DE BIPAGEM</span>
               <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-mono font-bold">
                 ONLINE
               </span>
             </div>
             <p className="text-xs text-zinc-400 mt-1">
-              Pronto para leitores USB/Bluetooth, coletores Android (vibração ativa) e câmera.
+              Bipe com leitor USB/Bluetooth ou câmera do celular.
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Alternador de Modos (Unitário vs Lote) */}
+          {/* Seletor de 3 Modos */}
           <div className="flex bg-black p-1 rounded-2xl border border-zinc-800">
             <button
               onClick={() => {
-                setScannerMode('SINGLE');
+                setScannerMode('QUICK');
                 setDuplicateWarning(null);
                 keepFocus();
               }}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                scannerMode === 'SINGLE'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 ${
+                scannerMode === 'QUICK'
                   ? 'bg-yellow-400 text-black shadow-sm'
                   : 'text-zinc-400 hover:text-white'
               }`}
             >
-              Unitário
+              <Zap className="w-3.5 h-3.5" />
+              <span>Modo Fácil (1-Clique)</span>
             </button>
+
+            <button
+              onClick={() => {
+                setScannerMode('DETAILED');
+                setDuplicateWarning(null);
+                keepFocus();
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                scannerMode === 'DETAILED'
+                  ? 'bg-yellow-400 text-black shadow-sm'
+                  : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              Ficha Completa
+            </button>
+
             <button
               onClick={() => {
                 setScannerMode('BATCH');
@@ -448,12 +577,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                   : 'text-zinc-400 hover:text-white'
               }`}
             >
-              <span>Multi-Bip (Lote)</span>
-              {batchItems.length > 0 && (
-                <span className="w-4 h-4 rounded-full bg-black text-yellow-400 text-[10px] font-black flex items-center justify-center">
-                  {batchItems.length}
-                </span>
-              )}
+              <span>Lote ({batchItems.length})</span>
             </button>
           </div>
 
@@ -466,20 +590,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                 : 'bg-zinc-800 hover:bg-zinc-700 text-yellow-400 border border-zinc-700'
             }`}
           >
-            {isCameraActive ? (
-              <>
-                <CameraOff className="w-4 h-4" />
-                <span className="hidden sm:inline">FECHAR</span>
-              </>
-            ) : (
-              <>
-                <Camera className="w-4 h-4" />
-                <span className="hidden sm:inline">CÂMERA</span>
-              </>
-            )}
+            {isCameraActive ? <CameraOff className="w-4 h-4" /> : <Camera className="w-4 h-4" />}
           </button>
 
-          {/* Som Toggle */}
+          {/* Som */}
           <button
             onClick={toggleSound}
             title={configuracoes.som_ativo ? 'Som ativado' : 'Som mudo'}
@@ -494,23 +608,19 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         </div>
       </div>
 
-      {/* Câmera Stream Container */}
+      {/* Câmera Stream */}
       {isCameraActive && (
-        <div className="bg-black rounded-3xl p-4 border-2 border-yellow-400 shadow-2xl overflow-hidden text-center animate-fadeIn">
+        <div className="bg-black rounded-3xl p-4 border-2 border-yellow-400 shadow-2xl text-center animate-fadeIn">
           <div className="text-xs font-bold text-yellow-400 mb-2 flex items-center justify-center gap-1.5 uppercase tracking-wider">
             <Zap className="w-4 h-4" />
-            <span>Aponte a câmera para o Código de Barras Code 128 ou QR Code</span>
+            <span>Aponte a câmera para o Código de Barras</span>
           </div>
           <div id="camera-scanner-reader" className="w-full max-w-md mx-auto rounded-2xl overflow-hidden" />
-          {cameraError && (
-            <div className="p-3 bg-red-500/20 text-red-400 text-xs rounded-xl mt-3">
-              {cameraError}
-            </div>
-          )}
+          {cameraError && <div className="p-3 bg-red-500/20 text-red-400 text-xs rounded-xl mt-3">{cameraError}</div>}
         </div>
       )}
 
-      {/* Alerta de Duplicidade ou Aviso */}
+      {/* Alerta de Duplicidade */}
       {duplicateWarning && (
         <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between text-xs text-amber-900 font-bold animate-fadeIn">
           <div className="flex items-center gap-2">
@@ -523,15 +633,15 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         </div>
       )}
 
-      {/* Campo Central de Leitura USB */}
-      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm p-6">
+      {/* Campo Central de Leitura USB / Digitação */}
+      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm p-5 sm:p-6">
         <form onSubmit={handleFormSubmit} className="relative">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              {scannerMode === 'SINGLE' ? 'LEITURA INDIVIDUAL' : 'BIPAGEM CONTÍNUA DE LOTE'}
+            <label className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+              {scannerMode === 'BATCH' ? 'BIPAGEM CONTÍNUA (LOTE)' : 'LEITURA RÁPIDA (BIPADOR OU CÂMERA)'}
             </label>
             <span className="text-[11px] text-yellow-700 font-bold bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200 font-mono">
-              {scannerMode === 'SINGLE' ? 'MODO UNITÁRIO' : `${batchItems.length} ITENS NO LOTE`}
+              FOCO ATIVO
             </span>
           </div>
 
@@ -541,7 +651,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
               type="text"
               value={scanInput}
               onChange={e => setScanInput(e.target.value)}
-              placeholder={scannerMode === 'SINGLE' ? "Bipe o código do equipamento..." : "Bipe continuamente os equipamentos do lote..."}
+              placeholder="Aproxime o leitor ou digite o código..."
               autoFocus
               className="w-full bg-slate-50 border-2 border-yellow-400 text-center font-mono font-black text-xl sm:text-2xl text-zinc-900 rounded-2xl py-4 px-6 focus:outline-none focus:ring-4 focus:ring-yellow-400/20 focus:bg-white transition-all placeholder:text-slate-400 placeholder:text-base placeholder:font-sans placeholder:font-normal shadow-inner"
             />
@@ -549,178 +659,317 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
               type="submit"
               className="absolute right-3 top-1/2 -translate-y-1/2 px-4 py-2 bg-zinc-900 hover:bg-black text-yellow-400 font-extrabold text-xs uppercase tracking-wider rounded-xl shadow-md transition-transform active:scale-95"
             >
-              {scannerMode === 'SINGLE' ? 'CONSULTAR' : 'BIPAR'}
+              BIPAR
             </button>
           </div>
         </form>
       </div>
 
       {/* ========================================================================= */}
-      {/* MODO 1: MODO INDIVIDUAL                                                   */}
+      {/* MODO 1: MODO RÁPIDO / OPERADOR (SUPER SIMPLES & 1-CLIQUE)                  */}
       {/* ========================================================================= */}
-      {scannerMode === 'SINGLE' && (
+      {scannerMode === 'QUICK' && (
         <>
           {scanState === 'IDLE' && (
             <div className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-3xl p-10 text-center">
-              <div className="w-14 h-14 rounded-2xl bg-white border border-slate-200 shadow-xs text-slate-400 flex items-center justify-center mx-auto mb-3 animate-pulse">
-                <Scan className="w-7 h-7 text-yellow-500" />
+              <div className="w-16 h-16 rounded-2xl bg-yellow-400/20 text-yellow-600 flex items-center justify-center mx-auto mb-3">
+                <Zap className="w-8 h-8" />
               </div>
-              <h3 className="text-base font-bold text-zinc-800 mb-1">
-                Aguardando Leitura Individual de Código...
+              <h3 className="text-lg font-black text-zinc-900 mb-1">
+                Bipe qualquer equipamento agora
               </h3>
               <p className="text-xs text-slate-500 max-w-md mx-auto">
-                Aproxime o leitor USB do código de barras para carregar a ficha técnica e ações imediatas.
+                Basta acionar o gatilho do leitor óptico para ver o item e transferir ou enviar para manutenção com 1 toque.
               </p>
             </div>
           )}
 
           {scanState === 'FOUND' && foundEquipment && (
-            <div className="bg-white rounded-3xl border-2 border-emerald-400 shadow-2xl p-6 sm:p-8 animate-fadeIn space-y-6">
+            <div className="bg-white rounded-3xl border-2 border-emerald-400 shadow-xl p-6 sm:p-8 animate-fadeIn space-y-6">
+              {/* Header do Equipamento Bipado */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5 border-b border-slate-100">
-                <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center flex-shrink-0 shadow-sm">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-500 text-white flex items-center justify-center font-black flex-shrink-0 shadow-md">
                     <CheckCircle2 className="w-7 h-7" />
                   </div>
                   <div>
-                    <div className="inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-emerald-600">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                      EQUIPAMENTO LOCALIZADO
-                    </div>
-                    <h3 className="text-xl sm:text-2xl font-black text-zinc-900">
+                    <span className="text-xs font-mono font-black text-yellow-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                      {foundEquipment.codigo_patrimonial}
+                    </span>
+                    <h3 className="text-xl sm:text-2xl font-black text-zinc-900 mt-1">
                       {foundEquipment.nome}
                     </h3>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400 font-mono">Lido às {lastScannedTime}</span>
+                  <StatusBadge status={foundEquipment.status} size="md" />
                   <button
                     onClick={handleResetScanner}
-                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-700 font-bold text-xs transition-colors"
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-800 font-bold text-xs"
                   >
-                    Próxima Leitura
+                    Próximo
                   </button>
                 </div>
               </div>
 
-              {/* Grid 4 Pilares */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-1">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">1. IDENTIFICAÇÃO</span>
-                  <div className="font-mono font-black text-base text-yellow-600">{foundEquipment.codigo_patrimonial}</div>
-                  <div className="text-xs font-semibold text-zinc-800">{foundEquipment.marca} {foundEquipment.modelo}</div>
-                  {foundEquipment.numero_serie && <div className="text-[11px] text-slate-500 font-mono">S/N: {foundEquipment.numero_serie}</div>}
+              {/* Informações Resumidas */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs bg-slate-50 p-4 rounded-2xl border border-slate-200/80">
+                <div>
+                  <span className="text-slate-400 block font-semibold">SETOR ATUAL</span>
+                  <strong className="text-zinc-900 text-sm">{foundEquipment.setor_nome || 'Geral'}</strong>
                 </div>
-
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-1">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">2. LOCALIZAÇÃO</span>
-                  <div className="font-bold text-sm text-zinc-900">{foundEquipment.setor_nome || 'Sem setor'}</div>
-                  <div className="text-xs text-slate-600">{foundEquipment.local_nome || 'Sem local físico'}</div>
+                <div>
+                  <span className="text-slate-400 block font-semibold">LOCAL / SALA</span>
+                  <strong className="text-zinc-900 text-sm">{foundEquipment.local_nome || 'Sem local'}</strong>
                 </div>
-
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-1">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">3. RESPONSÁVEL</span>
-                  <div className="font-bold text-sm text-zinc-900">{foundEquipment.responsavel || 'Sem responsável'}</div>
-                  <div className="text-xs text-slate-500">Categoria: {foundEquipment.categoria_nome || 'Geral'}</div>
-                </div>
-
-                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-1">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">4. STATUS OPERACIONAL</span>
-                  <div className="pt-0.5"><StatusBadge status={foundEquipment.status} size="md" /></div>
+                <div>
+                  <span className="text-slate-400 block font-semibold">RESPONSÁVEL</span>
+                  <strong className="text-zinc-900 text-sm">{foundEquipment.responsavel || '-'}</strong>
                 </div>
               </div>
 
-              {/* Ações Rápidas */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs pt-2">
-                {hasPermission('transfer_equipment') && foundEquipment.status !== 'BAIXADO' && (
-                  <button
-                    onClick={() => onOpenTransfer(foundEquipment)}
-                    className="p-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-800 font-bold flex flex-col items-center justify-center gap-1.5"
-                  >
+              {/* PAINEL DE AÇÕES RÁPIDAS (1-TOQUE) */}
+              <div className="space-y-4 pt-2">
+                <div className="text-xs font-black uppercase tracking-wider text-slate-500">
+                  ESCOLHA O QUE FAZER (1 CLIQUE):
+                </div>
+
+                {/* Bloco 1: MUDAR DE SETOR */}
+                <div className="p-4 bg-slate-100/70 rounded-2xl border border-slate-200 space-y-2.5">
+                  <span className="text-xs font-extrabold text-blue-900 flex items-center gap-1.5">
                     <ArrowLeftRight className="w-4 h-4 text-blue-600" />
-                    <span>TRANSFERIR</span>
-                  </button>
-                )}
-                {hasPermission('open_maintenance') && foundEquipment.status !== 'EM MANUTENÇÃO' && foundEquipment.status !== 'BAIXADO' && (
+                    <span>MUDAR PARA OUTRO SETOR (Clique no destino):</span>
+                  </span>
+
+                  <div className="flex flex-wrap gap-2">
+                    {setores.map(s => {
+                      const isCurrent = s.id === foundEquipment.setor_id;
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => !isCurrent && handleQuickTransferSetor(s.id)}
+                          disabled={isCurrent}
+                          className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-1.5 ${
+                            isCurrent
+                              ? 'bg-blue-600 text-white shadow-sm cursor-default'
+                              : 'bg-white hover:bg-blue-50 text-zinc-800 border border-slate-200 hover:border-blue-300 hover:scale-[1.02]'
+                          }`}
+                        >
+                          {isCurrent && <Check className="w-3.5 h-3.5" />}
+                          <span>{s.nome}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Bloco 2: Ações Diretas */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Manutenção */}
+                  {foundEquipment.status !== 'EM MANUTENÇÃO' ? (
+                    <button
+                      onClick={handleQuickSendMaintenance}
+                      className="p-4 rounded-2xl bg-amber-50 hover:bg-amber-100 text-amber-900 border-2 border-amber-300 font-extrabold text-xs flex flex-col items-center justify-center gap-1.5 transition-all hover:scale-[1.02]"
+                    >
+                      <Wrench className="w-5 h-5 text-amber-600" />
+                      <span>ESTÁ COM DEFEITO / MANUTENÇÃO</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => onOpenFinishMaintenance(foundEquipment)}
+                      className="p-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs flex flex-col items-center justify-center gap-1.5 transition-all hover:scale-[1.02]"
+                    >
+                      <RotateCcw className="w-5 h-5" />
+                      <span>CONCLUIR REPARO / LIBERAR</span>
+                    </button>
+                  )}
+
+                  {/* Devolver Estoque */}
                   <button
-                    onClick={() => onOpenMaintenance(foundEquipment)}
-                    className="p-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 font-bold flex flex-col items-center justify-center gap-1.5"
+                    onClick={handleQuickReturnToStock}
+                    className="p-4 rounded-2xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-2 border-emerald-300 font-extrabold text-xs flex flex-col items-center justify-center gap-1.5 transition-all hover:scale-[1.02]"
                   >
-                    <Wrench className="w-4 h-4 text-amber-600" />
-                    <span>MANUTENÇÃO</span>
+                    <PackageCheck className="w-5 h-5 text-emerald-600" />
+                    <span>GUARDAR / DISPONÍVEL NO ESTOQUE</span>
                   </button>
-                )}
-                {hasPermission('finish_maintenance') && foundEquipment.status === 'EM MANUTENÇÃO' && activeTicket && (
+
+                  {/* Imprimir Etiqueta */}
                   <button
-                    onClick={() => onOpenFinishMaintenance(foundEquipment)}
-                    className="p-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold flex flex-col items-center justify-center gap-1.5"
+                    onClick={() => handlePrintLabel(foundEquipment)}
+                    className="p-4 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-black font-black text-xs flex flex-col items-center justify-center gap-1.5 transition-all hover:scale-[1.02] shadow-xs"
                   >
-                    <RotateCcw className="w-4 h-4" />
-                    <span>FINALIZAR</span>
+                    <Printer className="w-5 h-5" />
+                    <span>IMPRIMIR ETIQUETA P&B</span>
                   </button>
-                )}
-                {hasPermission('edit_equipment') && foundEquipment.status !== 'BAIXADO' && (
-                  <button
-                    onClick={() => onOpenStatusChange(foundEquipment)}
-                    className="p-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-800 font-bold flex flex-col items-center justify-center gap-1.5"
-                  >
-                    <RefreshCw className="w-4 h-4 text-slate-600" />
-                    <span>STATUS</span>
-                  </button>
-                )}
-                <button
-                  onClick={() => onViewDetails(foundEquipment)}
-                  className="p-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-800 font-bold flex flex-col items-center justify-center gap-1.5"
-                >
-                  <History className="w-4 h-4 text-zinc-700" />
-                  <span>HISTÓRICO</span>
-                </button>
-                {hasPermission('edit_equipment') && (
-                  <button
-                    onClick={() => onOpenEdit(foundEquipment)}
-                    className="p-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-800 font-bold flex flex-col items-center justify-center gap-1.5"
-                  >
-                    <Edit3 className="w-4 h-4 text-zinc-700" />
-                    <span>EDITAR</span>
-                  </button>
-                )}
+                </div>
               </div>
             </div>
           )}
 
           {scanState === 'NOT_FOUND' && (
-            <div className="bg-white rounded-3xl border-2 border-red-400 shadow-2xl p-8 text-center animate-fadeIn space-y-5">
-              <div className="w-14 h-14 rounded-2xl bg-red-50 text-red-600 border border-red-200 flex items-center justify-center mx-auto shadow-xs">
-                <AlertCircle className="w-7 h-7" />
+            <div className="bg-white rounded-3xl border-2 border-yellow-400 shadow-xl p-6 sm:p-8 animate-fadeIn space-y-5">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 border border-amber-200 flex items-center justify-center font-black flex-shrink-0">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <span className="text-xs font-mono font-black text-amber-700 uppercase">CÓDIGO NOVO DETECTADO</span>
+                  <h3 className="text-xl font-black text-zinc-900 font-mono">{scannedCode}</h3>
+                </div>
               </div>
-              <div>
-                <div className="text-xs font-black uppercase tracking-wider text-red-600 mb-1">CÓDIGO NÃO CADASTRADO</div>
-                <h3 className="text-2xl font-mono font-black text-zinc-900">{scannedCode}</h3>
-              </div>
-              <div className="flex items-center justify-center gap-3 pt-2">
-                <button
-                  onClick={handleResetScanner}
-                  className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 font-semibold text-xs hover:bg-slate-50"
-                >
-                  Tentar Outro Código
-                </button>
-                {hasPermission('create_equipment') && (
+
+              {/* Formulário de Cadastro Rápido em 5 segundos */}
+              <form onSubmit={handleQuickSaveNew} className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-4 text-xs">
+                <div className="font-extrabold text-zinc-800 text-sm">
+                  ⚡ Cadastrar Este Item Rapidamente:
+                </div>
+
+                <div>
+                  <label className="block font-bold text-zinc-700 mb-1">Nome do Equipamento *</label>
+                  <input
+                    type="text"
+                    value={quickName}
+                    onChange={e => setQuickName(e.target.value)}
+                    placeholder="Ex: Paleteira Manual 02, Notebook Dell..."
+                    required
+                    autoFocus
+                    className="w-full bg-white border-2 border-yellow-400 rounded-xl px-3.5 py-2.5 text-sm font-bold text-zinc-900 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-zinc-700 mb-1">Setor Inicial:</label>
+                  <div className="flex flex-wrap gap-2">
+                    {setores.map(s => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          setQuickSetorId(s.id);
+                          setQuickResp(s.responsavel_padrao || '');
+                        }}
+                        className={`px-3 py-1.5 rounded-xl font-bold text-xs transition-all ${
+                          quickSetorId === s.id
+                            ? 'bg-zinc-900 text-yellow-400 shadow-sm'
+                            : 'bg-white text-zinc-700 border border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        {s.nome}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
                   <button
-                    onClick={() => onOpenNewEquipmentWithCode(scannedCode)}
-                    className="px-6 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-xs uppercase tracking-wider flex items-center gap-2 shadow-yellow-glow"
+                    type="submit"
+                    className="flex-1 py-3 bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-sm uppercase rounded-xl shadow-yellow-glow transition-transform active:scale-95"
                   >
-                    <Plus className="w-4 h-4" />
-                    <span>CADASTRAR ESTE EQUIPAMENTO</span>
+                    SALVAR E CONCLUIR CADASTRO
                   </button>
-                )}
-              </div>
+                  <button
+                    type="button"
+                    onClick={handleResetScanner}
+                    className="px-4 py-3 rounded-xl border border-slate-200 text-slate-600 font-bold hover:bg-slate-100"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </form>
             </div>
           )}
         </>
       )}
 
       {/* ========================================================================= */}
-      {/* MODO 2: MODO MULTI-BIPAGEM (LOTE / GALPÃO & DOCA)                         */}
+      {/* MODO 2: FICHA COMPLETA (DETALHADA)                                        */}
+      {/* ========================================================================= */}
+      {scannerMode === 'DETAILED' && (
+        <>
+          {scanState === 'IDLE' && (
+            <div className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-3xl p-10 text-center">
+              <Scan className="w-8 h-8 text-yellow-500 mx-auto mb-2 animate-pulse" />
+              <h3 className="text-base font-bold text-zinc-800">Aguardando leitura de código...</h3>
+            </div>
+          )}
+
+          {scanState === 'FOUND' && foundEquipment && (
+            <div className="bg-white rounded-3xl border-2 border-emerald-400 shadow-xl p-6 sm:p-8 animate-fadeIn space-y-6">
+              <div className="flex items-center justify-between border-b pb-4">
+                <div>
+                  <span className="text-xs font-mono font-bold text-yellow-600">{foundEquipment.codigo_patrimonial}</span>
+                  <h3 className="text-2xl font-black text-zinc-900">{foundEquipment.nome}</h3>
+                </div>
+                <StatusBadge status={foundEquipment.status} size="md" />
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="p-3 bg-slate-50 rounded-xl">
+                  <span className="text-slate-400 block font-semibold">MARCA/MODELO</span>
+                  <strong className="text-zinc-900">{foundEquipment.marca} {foundEquipment.modelo}</strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-xl">
+                  <span className="text-slate-400 block font-semibold">SETOR</span>
+                  <strong className="text-zinc-900">{foundEquipment.setor_nome || '-'}</strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-xl">
+                  <span className="text-slate-400 block font-semibold">RESPONSÁVEL</span>
+                  <strong className="text-zinc-900">{foundEquipment.responsavel || '-'}</strong>
+                </div>
+                <div className="p-3 bg-slate-50 rounded-xl">
+                  <span className="text-slate-400 block font-semibold">Nº SÉRIE</span>
+                  <strong className="text-zinc-900 font-mono">{foundEquipment.numero_serie || '-'}</strong>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2">
+                <button
+                  onClick={() => onOpenTransfer(foundEquipment)}
+                  className="p-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-800 font-bold text-xs"
+                >
+                  Transferir Completo
+                </button>
+                <button
+                  onClick={() => onOpenMaintenance(foundEquipment)}
+                  className="p-3 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold text-xs"
+                >
+                  Ordem de Manutenção
+                </button>
+                <button
+                  onClick={() => onViewDetails(foundEquipment)}
+                  className="p-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-800 font-bold text-xs"
+                >
+                  Histórico / Ficha
+                </button>
+                <button
+                  onClick={() => onOpenEdit(foundEquipment)}
+                  className="p-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-zinc-800 font-bold text-xs"
+                >
+                  Editar Cadastro
+                </button>
+              </div>
+            </div>
+          )}
+
+          {scanState === 'NOT_FOUND' && (
+            <div className="bg-white rounded-3xl border-2 border-red-400 p-8 text-center space-y-4">
+              <div className="font-mono text-2xl font-black">{scannedCode}</div>
+              <p className="text-xs text-slate-500">Código não cadastrado no inventário.</p>
+              <button
+                onClick={() => onOpenNewEquipmentWithCode(scannedCode)}
+                className="px-6 py-2.5 rounded-xl bg-yellow-400 font-extrabold text-xs uppercase"
+              >
+                Cadastrar Ficha Completa
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODO 3: MULTI-BIPAGEM (LOTE)                                              */}
       {/* ========================================================================= */}
       {scannerMode === 'BATCH' && (
         <div className="space-y-6 animate-fadeIn">
@@ -745,7 +994,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
               </div>
             </div>
 
-            {/* Ações Coletivas em Lote */}
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setIsBatchTransferOpen(true)}
@@ -813,7 +1061,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
             </div>
           </div>
 
-          {/* Tabela do Lote */}
           <div className="bg-white rounded-3xl border border-slate-200/90 shadow-sm overflow-hidden">
             {batchItems.length > 0 ? (
               <div className="overflow-x-auto">
@@ -865,7 +1112,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         </div>
       )}
 
-      {/* Modal 1: Transferência em Lote */}
+      {/* Modais de Lote */}
       <Modal
         isOpen={isBatchTransferOpen}
         onClose={() => setIsBatchTransferOpen(false)}
@@ -873,10 +1120,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         maxWidth="md"
       >
         <form onSubmit={handleExecuteBatchTransfer} className="space-y-4 text-xs">
-          <p className="text-slate-500">
-            Todos os <strong>{batchItems.length} equipamentos</strong> da sessão serão transferidos simultaneamente para o destino abaixo.
-          </p>
-
           <div>
             <label className="block font-semibold text-zinc-700 mb-1">Setor de Destino *</label>
             <select
@@ -911,28 +1154,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
             </select>
           </div>
 
-          <div>
-            <label className="block font-semibold text-zinc-700 mb-1">Novo Responsável (Opcional)</label>
-            <input
-              type="text"
-              value={batchResponsavel}
-              onChange={e => setBatchResponsavel(e.target.value)}
-              placeholder="Deixe em branco para manter o atual..."
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400"
-            />
-          </div>
-
-          <div>
-            <label className="block font-semibold text-zinc-700 mb-1">Motivo da Transferência Coletiva</label>
-            <input
-              type="text"
-              value={batchMotivo}
-              onChange={e => setBatchMotivo(e.target.value)}
-              placeholder="Ex: Carga de expedição para filial..."
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400"
-            />
-          </div>
-
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
             <button
               type="button"
@@ -951,7 +1172,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         </form>
       </Modal>
 
-      {/* Modal 2: Envio em Lote para Manutenção */}
       <Modal
         isOpen={isBatchMaintenanceOpen}
         onClose={() => setIsBatchMaintenanceOpen(false)}
@@ -966,31 +1186,9 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
               value={batchProblema}
               onChange={e => setBatchProblema(e.target.value)}
               required
-              placeholder="Ex: Revisão periódica de baterias / calibração..."
+              placeholder="Ex: Revisão de rotina..."
               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400"
             />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block font-semibold text-zinc-700 mb-1">Previsão de Retorno</label>
-              <input
-                type="date"
-                value={batchPrevisao}
-                onChange={e => setBatchPrevisao(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400"
-              />
-            </div>
-            <div>
-              <label className="block font-semibold text-zinc-700 mb-1">Oficina / Técnico</label>
-              <input
-                type="text"
-                value={batchTecnico}
-                onChange={e => setBatchTecnico(e.target.value)}
-                placeholder="Ex: Oficina Interna"
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400"
-              />
-            </div>
           </div>
 
           <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
@@ -1011,7 +1209,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         </form>
       </Modal>
 
-      {/* Modal 3: Alteração de Status em Lote */}
       <Modal
         isOpen={isBatchStatusOpen}
         onClose={() => setIsBatchStatusOpen(false)}
@@ -1051,7 +1248,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         </form>
       </Modal>
 
-      {/* Modal 4: Código ZPL para Impressoras Zebra */}
       <Modal
         isOpen={isBatchZPLOpen}
         onClose={() => setIsBatchZPLOpen(false)}
@@ -1059,10 +1255,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         maxWidth="lg"
       >
         <div className="space-y-3 text-xs">
-          <p className="text-slate-500">
-            Comandos nativos <strong>ZPL (Zebra Programming Language)</strong> prontos para envio via driver RAW, porta USB ou rede (porta 9100).
-          </p>
-
           <div className="relative bg-zinc-950 text-emerald-400 p-3.5 rounded-xl font-mono text-[11px] max-h-60 overflow-y-auto border border-zinc-800">
             <pre className="whitespace-pre-wrap">
               {generateBatchZPL(batchItems.map(b => b.equipment), configuracoes.empresa_nome, 'PADRAO_50X30')}
