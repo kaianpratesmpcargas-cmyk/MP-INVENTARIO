@@ -255,7 +255,22 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (sbCat && sbCat.length > 0) { setCategorias(sbCat as Categoria[]); cloudHasData = true; }
       if (sbSet && sbSet.length > 0) { setSetores(sbSet as Setor[]); cloudHasData = true; }
       if (sbLoc && sbLoc.length > 0) { setLocais(sbLoc as Local[]); cloudHasData = true; }
-      if (sbEq && sbEq.length > 0) { setEquipamentos(sbEq as Equipamento[]); cloudHasData = true; }
+
+      if (sbEq && sbEq.length > 0) {
+        const activeSets = (sbSet && sbSet.length > 0) ? sbSet : setores;
+        const activeCats = (sbCat && sbCat.length > 0) ? sbCat : categorias;
+        const activeLocs = (sbLoc && sbLoc.length > 0) ? sbLoc : locais;
+
+        const enriched = sbEq.map((e: any) => ({
+          ...e,
+          setor_nome: e.setor_nome || activeSets.find((s: any) => s.id === e.setor_id)?.nome || 'Almoxarifado Geral',
+          categoria_nome: e.categoria_nome || activeCats.find((c: any) => c.id === e.categoria_id)?.nome || 'Informática',
+          local_nome: e.local_nome || activeLocs.find((l: any) => l.id === e.local_id)?.nome || '',
+        }));
+        setEquipamentos(enriched as Equipamento[]);
+        cloudHasData = true;
+      }
+
       if (sbMov && sbMov.length > 0) { setMovimentacoes(sbMov as Movimentacao[]); cloudHasData = true; }
       if (sbMan && sbMan.length > 0) { setManutencoes(sbMan as Manutencao[]); cloudHasData = true; }
       if (sbConf && sbConf.length > 0) { setConferencias(sbConf as Conferencia[]); cloudHasData = true; }
