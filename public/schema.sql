@@ -232,3 +232,65 @@ ALTER TABLE public.conferencia_itens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.historico ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.auditoria ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.configuracoes ENABLE ROW LEVEL SECURITY;
+
+-- Políticas de Acesso RLS
+DROP POLICY IF EXISTS "Permitir tudo em profiles" ON public.profiles;
+CREATE POLICY "Permitir tudo em profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em categorias" ON public.categorias;
+CREATE POLICY "Permitir tudo em categorias" ON public.categorias FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em setores" ON public.setores;
+CREATE POLICY "Permitir tudo em setores" ON public.setores FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em locais" ON public.locais;
+CREATE POLICY "Permitir tudo em locais" ON public.locais FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em equipamentos" ON public.equipamentos;
+CREATE POLICY "Permitir tudo em equipamentos" ON public.equipamentos FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em movimentacoes" ON public.movimentacoes;
+CREATE POLICY "Permitir tudo em movimentacoes" ON public.movimentacoes FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em manutencoes" ON public.manutencoes;
+CREATE POLICY "Permitir tudo em manutencoes" ON public.manutencoes FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em conferencias" ON public.conferencias;
+CREATE POLICY "Permitir tudo em conferencias" ON public.conferencias FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em conferencia_itens" ON public.conferencia_itens;
+CREATE POLICY "Permitir tudo em conferencia_itens" ON public.conferencia_itens FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em historico" ON public.historico;
+CREATE POLICY "Permitir tudo em historico" ON public.historico FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em auditoria" ON public.auditoria;
+CREATE POLICY "Permitir tudo em auditoria" ON public.auditoria FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Permitir tudo em configuracoes" ON public.configuracoes;
+CREATE POLICY "Permitir tudo em configuracoes" ON public.configuracoes FOR ALL USING (true) WITH CHECK (true);
+
+-- Trigger para criar perfil automaticamente no SignUp do Supabase Auth
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger AS $$
+BEGIN
+  INSERT INTO public.profiles (id, email, full_name, role, status, department)
+  VALUES (
+    new.id,
+    new.email,
+    COALESCE(new.raw_user_meta_data->>'full_name', split_part(new.email, '@', 1)),
+    'ADMINISTRADOR',
+    'ATIVO',
+    COALESCE(new.raw_user_meta_data->>'department', '')
+  )
+  ON CONFLICT (id) DO UPDATE SET
+    email = EXCLUDED.email,
+    full_name = COALESCE(EXCLUDED.full_name, profiles.full_name);
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();

@@ -30,6 +30,7 @@ import {
 } from '../mock/initialData';
 import { formatPatrimonioCode, sanitizeBarcodeValue } from '../lib/barcode';
 import { soundService } from '../lib/sound';
+import { getSupabaseClient } from '../lib/supabase';
 import { useAuth } from './AuthContext';
 
 interface InventoryContextType {
@@ -177,6 +178,52 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     soundService.setEnabled(configuracoes.som_ativo);
     soundService.setVolume(configuracoes.volume_som);
   }, [configuracoes.som_ativo, configuracoes.volume_som]);
+
+  // Carrega dados da Nuvem (Supabase) na inicialização
+  useEffect(() => {
+    const fetchCloudData = async () => {
+      const supabase = getSupabaseClient();
+      if (!supabase) return;
+
+      try {
+        const [
+          { data: sbCat },
+          { data: sbSet },
+          { data: sbLoc },
+          { data: sbEq },
+          { data: sbMov },
+          { data: sbMan },
+          { data: sbConf },
+          { data: sbAud },
+          { data: sbCfg },
+        ] = await Promise.all([
+          supabase.from('categorias').select('*').order('nome'),
+          supabase.from('setores').select('*').order('nome'),
+          supabase.from('locais').select('*').order('nome'),
+          supabase.from('equipamentos').select('*').order('created_at', { ascending: false }),
+          supabase.from('movimentacoes').select('*').order('created_at', { ascending: false }),
+          supabase.from('manutencoes').select('*').order('created_at', { ascending: false }),
+          supabase.from('conferencias').select('*').order('created_at', { ascending: false }),
+          supabase.from('auditoria').select('*').order('created_at', { ascending: false }),
+          supabase.from('configuracoes').select('*').maybeSingle(),
+        ]);
+
+        if (sbCat && sbCat.length > 0) setCategorias(sbCat as Categoria[]);
+        if (sbSet && sbSet.length > 0) setSetores(sbSet as Setor[]);
+        if (sbLoc && sbLoc.length > 0) setLocais(sbLoc as Local[]);
+        if (sbEq && sbEq.length > 0) setEquipamentos(sbEq as Equipamento[]);
+        if (sbMov && sbMov.length > 0) setMovimentacoes(sbMov as Movimentacao[]);
+        if (sbMan && sbMan.length > 0) setManutencoes(sbMan as Manutencao[]);
+        if (sbConf && sbConf.length > 0) setConferencias(sbConf as Conferencia[]);
+        if (sbAud && sbAud.length > 0) setAuditoria(sbAud as AuditoriaLog[]);
+        if (sbCfg) setConfiguracoes(sbCfg as ConfiguracoesSistema);
+      } catch (err) {
+        console.warn('Erro ao carregar dados do Supabase:', err);
+      }
+    };
+
+    fetchCloudData();
+  }, []);
 
   // Persistência em LocalStorage
   useEffect(() => {
