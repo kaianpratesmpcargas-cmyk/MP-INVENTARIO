@@ -796,8 +796,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     newStatus: EquipmentStatus,
     motivo?: string
   ) => {
-    const eq = equipamentos.find(e => e.id === equipamentoId);
-    if (!eq || eq.status === newStatus) return;
+    const eq = equipamentos.find(e => e.id === equipamentoId || e.codigo_patrimonial === equipamentoId);
+    if (!eq) return;
 
     const previousStatus = eq.status;
     const nowIso = new Date().toISOString();
@@ -808,7 +808,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       updated_at: nowIso,
     };
 
-    setEquipamentos(prev => prev.map(e => e.id === equipamentoId ? updated : e));
+    setEquipamentos(prev => prev.map(e => (e.id === eq.id || e.codigo_patrimonial === eq.codigo_patrimonial) ? updated : e));
 
     const newMov: Movimentacao = {
       id: generateValidUUID(),
@@ -838,8 +838,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      supabase.from('equipamentos').upsert(sanitizeForSupabase(updated)).then(() => {});
-      supabase.from('movimentacoes').upsert(sanitizeForSupabase(newMov)).then(() => {});
+      try {
+        await supabase.from('equipamentos').update({ status: newStatus, updated_at: nowIso }).eq('id', eq.id);
+        await supabase.from('movimentacoes').insert(sanitizeForSupabase(newMov));
+      } catch (err) {
+        console.warn('Erro ao atualizar status no Supabase:', err);
+      }
     }
   };
 
@@ -855,10 +859,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const getEquipmentHistory = (equipamentoId: string): HistoricoEvento[] => {
-    const eq = equipamentos.find(e => e.id === equipamentoId);
+    const eq = equipamentos.find(e => e.id === equipamentoId || e.codigo_patrimonial === equipamentoId);
     if (!eq) return [];
 
-    const eqMovs = movimentacoes.filter(m => m.equipamento_id === equipamentoId);
+    const eqMovs = movimentacoes.filter(m => m.equipamento_id === eq.id || m.equipamento_codigo === eq.codigo_patrimonial);
     
     return eqMovs.map(m => {
       let titulo = 'Movimentação';

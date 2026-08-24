@@ -39,7 +39,7 @@ interface EquipmentDetailModalProps {
 export const EquipmentDetailModal: React.FC<EquipmentDetailModalProps> = ({
   isOpen,
   onClose,
-  equipamento,
+  equipamento: propEquipamento,
   onOpenTransfer,
   onOpenMaintenance,
   onOpenFinishMaintenance,
@@ -47,14 +47,19 @@ export const EquipmentDetailModal: React.FC<EquipmentDetailModalProps> = ({
   onOpenDecommission,
   onOpenEdit,
 }) => {
-  const { getEquipmentHistory, manutencoes } = useInventory();
+  const { equipamentos, getEquipmentHistory, manutencoes } = useInventory();
   const { hasPermission } = useAuth();
   const [activeTab, setActiveTab] = useState<'info' | 'history'>('info');
+
+  // Obtém sempre o registro vivo e mais recente da memória e da nuvem
+  const equipamento = propEquipamento
+    ? (equipamentos.find(e => e.id === propEquipamento.id || e.codigo_patrimonial === propEquipamento.codigo_patrimonial) || propEquipamento)
+    : null;
 
   if (!equipamento) return null;
 
   const historyEvents = getEquipmentHistory(equipamento.id);
-  const activeTicket = manutencoes.find(m => m.equipamento_id === equipamento.id && !m.concluida);
+  const activeTicket = manutencoes.find(m => (m.equipamento_id === equipamento.id || m.equipamento_codigo === equipamento.codigo_patrimonial) && !m.concluida);
 
   const handlePrint = async () => {
     try {
