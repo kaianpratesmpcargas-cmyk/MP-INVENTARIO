@@ -1,11 +1,26 @@
 -- ====================================================================
--- MP CARGAS — Schema Completo do Banco de Dados Supabase (PostgreSQL)
+-- MP CARGAS — Schema Definitivo com Suporte a Tempo Real (Supabase)
 -- Copie e cole no SQL Editor do seu Dashboard Supabase e clique em RUN
 -- ====================================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
+-- Remove tabelas antigas para recriar com tipos corretos
+DROP TABLE IF EXISTS public.conferencia_itens CASCADE;
+DROP TABLE IF EXISTS public.conferencias CASCADE;
+DROP TABLE IF EXISTS public.manutencoes CASCADE;
+DROP TABLE IF EXISTS public.movimentacoes CASCADE;
+DROP TABLE IF EXISTS public.historico CASCADE;
+DROP TABLE IF EXISTS public.auditoria CASCADE;
+DROP TABLE IF EXISTS public.equipamentos CASCADE;
+DROP TABLE IF EXISTS public.locais CASCADE;
+DROP TABLE IF EXISTS public.setores CASCADE;
+DROP TABLE IF EXISTS public.categorias CASCADE;
+DROP TABLE IF EXISTS public.configuracoes CASCADE;
+DROP TABLE IF EXISTS public.profiles CASCADE;
+
+-- Criação dos Tipos ENUM
 DO $$ BEGIN
     CREATE TYPE user_role AS ENUM ('ADMINISTRADOR', 'CONFERENTE', 'MANUTENÇÃO', 'CONSULTA');
 EXCEPTION WHEN duplicate_object THEN null; END $$;
@@ -22,8 +37,8 @@ DO $$ BEGIN
     CREATE TYPE movement_type AS ENUM ('CADASTRO', 'TRANSFERENCIA', 'ENVIO_MANUTENCAO', 'RETORNO_MANUTENCAO', 'ALTERACAO_STATUS', 'BAIXA', 'CONFERENCIA');
 EXCEPTION WHEN duplicate_object THEN null; END $$;
 
--- Recria tabelas com suporte total a IDs flexíveis (TEXT)
-CREATE TABLE IF NOT EXISTS public.profiles (
+-- 1. PROFILES (Usuários)
+CREATE TABLE public.profiles (
     id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
     password TEXT,
@@ -38,7 +53,8 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.categorias (
+-- 2. CATEGORIAS
+CREATE TABLE public.categorias (
     id TEXT PRIMARY KEY,
     nome TEXT NOT NULL UNIQUE,
     descricao TEXT,
@@ -46,7 +62,8 @@ CREATE TABLE IF NOT EXISTS public.categorias (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.setores (
+-- 3. SETORES
+CREATE TABLE public.setores (
     id TEXT PRIMARY KEY,
     nome TEXT NOT NULL UNIQUE,
     responsavel_padrao TEXT,
@@ -54,15 +71,18 @@ CREATE TABLE IF NOT EXISTS public.setores (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.locais (
+-- 4. LOCAIS
+CREATE TABLE public.locais (
     id TEXT PRIMARY KEY,
     setor_id TEXT,
+    setor_nome TEXT,
     nome TEXT NOT NULL,
     descricao TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.configuracoes (
+-- 5. CONFIGURAÇÕES
+CREATE TABLE public.configuracoes (
     id TEXT PRIMARY KEY DEFAULT 'config-main',
     empresa_nome TEXT NOT NULL DEFAULT 'MP CARGAS',
     empresa_cnpj TEXT DEFAULT '00.000.000/0001-00',
@@ -77,7 +97,8 @@ CREATE TABLE IF NOT EXISTS public.configuracoes (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.equipamentos (
+-- 6. EQUIPAMENTOS
+CREATE TABLE public.equipamentos (
     id TEXT PRIMARY KEY,
     codigo_patrimonial TEXT NOT NULL UNIQUE,
     codigo_barras TEXT NOT NULL UNIQUE,
@@ -110,7 +131,8 @@ CREATE TABLE IF NOT EXISTS public.equipamentos (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.movimentacoes (
+-- 7. MOVIMENTAÇÕES
+CREATE TABLE public.movimentacoes (
     id TEXT PRIMARY KEY,
     equipamento_id TEXT NOT NULL,
     equipamento_codigo TEXT NOT NULL,
@@ -135,7 +157,8 @@ CREATE TABLE IF NOT EXISTS public.movimentacoes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.manutencoes (
+-- 8. MANUTENÇÕES
+CREATE TABLE public.manutencoes (
     id TEXT PRIMARY KEY,
     equipamento_id TEXT NOT NULL,
     equipamento_codigo TEXT NOT NULL,
@@ -160,7 +183,8 @@ CREATE TABLE IF NOT EXISTS public.manutencoes (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.conferencias (
+-- 9. CONFERÊNCIAS
+CREATE TABLE public.conferencias (
     id TEXT PRIMARY KEY,
     titulo TEXT NOT NULL,
     setor_id TEXT,
@@ -178,10 +202,12 @@ CREATE TABLE IF NOT EXISTS public.conferencias (
     observacoes TEXT,
     data_inicio TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now()),
     data_fim TIMESTAMPTZ,
+    itens JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.conferencia_itens (
+-- 10. CONFERÊNCIA ITENS
+CREATE TABLE public.conferencia_itens (
     id TEXT PRIMARY KEY,
     conferencia_id TEXT NOT NULL,
     equipamento_id TEXT NOT NULL,
@@ -197,7 +223,8 @@ CREATE TABLE IF NOT EXISTS public.conferencia_itens (
     divergente BOOLEAN NOT NULL DEFAULT false
 );
 
-CREATE TABLE IF NOT EXISTS public.historico (
+-- 11. HISTÓRICO
+CREATE TABLE public.historico (
     id TEXT PRIMARY KEY,
     equipamento_id TEXT NOT NULL,
     titulo TEXT NOT NULL,
@@ -207,7 +234,8 @@ CREATE TABLE IF NOT EXISTS public.historico (
     data_hora TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
-CREATE TABLE IF NOT EXISTS public.auditoria (
+-- 12. AUDITORIA
+CREATE TABLE public.auditoria (
     id TEXT PRIMARY KEY,
     usuario_id TEXT,
     usuario_nome TEXT NOT NULL,
@@ -223,7 +251,7 @@ CREATE TABLE IF NOT EXISTS public.auditoria (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 
--- Habilita RLS com Políticas de Acesso
+-- Habilita RLS em todas as tabelas
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.categorias ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.setores ENABLE ROW LEVEL SECURITY;
@@ -237,41 +265,19 @@ ALTER TABLE public.historico ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.auditoria ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.configuracoes ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Permitir profiles" ON public.profiles;
+-- Políticas de Acesso Total
 CREATE POLICY "Permitir profiles" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir categorias" ON public.categorias;
 CREATE POLICY "Permitir categorias" ON public.categorias FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir setores" ON public.setores;
 CREATE POLICY "Permitir setores" ON public.setores FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir locais" ON public.locais;
 CREATE POLICY "Permitir locais" ON public.locais FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir equipamentos" ON public.equipamentos;
 CREATE POLICY "Permitir equipamentos" ON public.equipamentos FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir movimentacoes" ON public.movimentacoes;
 CREATE POLICY "Permitir movimentacoes" ON public.movimentacoes FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir manutencoes" ON public.manutencoes;
 CREATE POLICY "Permitir manutencoes" ON public.manutencoes FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir conferencias" ON public.conferencias;
 CREATE POLICY "Permitir conferencias" ON public.conferencias FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir conferencia_itens" ON public.conferencia_itens;
 CREATE POLICY "Permitir conferencia_itens" ON public.conferencia_itens FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir historico" ON public.historico;
 CREATE POLICY "Permitir historico" ON public.historico FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir auditoria" ON public.auditoria;
 CREATE POLICY "Permitir auditoria" ON public.auditoria FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Permitir configuracoes" ON public.configuracoes;
 CREATE POLICY "Permitir configuracoes" ON public.configuracoes FOR ALL USING (true) WITH CHECK (true);
 
--- Habilita Realtime para todas as tabelas
+-- Habilita Publicação em Tempo Real (Supabase Realtime)
 ALTER PUBLICATION supabase_realtime ADD TABLE public.profiles, public.categorias, public.setores, public.locais, public.equipamentos, public.movimentacoes, public.manutencoes, public.conferencias, public.configuracoes;
