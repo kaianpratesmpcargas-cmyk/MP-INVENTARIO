@@ -5,7 +5,7 @@ import { Eye, EyeOff, LogIn, UserPlus, ArrowLeft, Loader2, AlertCircle } from 'l
 type Mode = 'login' | 'register';
 
 export const LoginView: React.FC = () => {
-  const { login, requestAccess, isLoading } = useAuth();
+  const { login, requestAccess, isLoading, users } = useAuth();
 
   const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
@@ -15,6 +15,8 @@ export const LoginView: React.FC = () => {
   const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  const isFirstSetup = users.length === 0;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,7 +79,18 @@ export const LoginView: React.FC = () => {
         <div className="bg-[#1a1a1a] border border-zinc-800 rounded-2xl p-7 shadow-2xl">
           {mode === 'login' ? (
             <>
-              <h2 className="text-white font-semibold text-sm mb-5">Acesso ao Sistema</h2>
+              <h2 className="text-white font-semibold text-sm mb-3">Acesso ao Sistema</h2>
+
+              {isFirstSetup && (
+                <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
+                  <div className="font-bold flex items-center gap-1.5 mb-0.5 text-yellow-400">
+                    <span>👋 Primeiro Acesso Detectado</span>
+                  </div>
+                  <p className="text-[11px] text-zinc-300">
+                    Digite seu e-mail e uma senha de 6 dígitos para criar e acessar sua conta de <strong>Administrador</strong> automaticamente.
+                  </p>
+                </div>
+              )}
 
               <form onSubmit={handleLogin} className="space-y-3.5">
                 <div>

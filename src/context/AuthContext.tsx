@@ -230,15 +230,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: true, message: `Bem-vindo, ${updatedUser.full_name}!` };
       }
 
-      // 3. Se não há nenhum usuário em lugar nenhum, sugere cadastrar o primeiro admin
+      // 3. Se não há nenhum usuário cadastrado ainda, cria automaticamente como primeiro Administrador!
       if (users.length === 0) {
-        return {
-          success: false,
-          message: 'Nenhum usuário cadastrado no sistema ainda. Clique em "Solicitar Acesso / Criar Conta" abaixo para criar a conta de Administrador.',
-        };
+        if (password && password.length >= 6) {
+          const autoName = emailClean.split('@')[0].replace(/[._-]/g, ' ').toUpperCase() || 'Administrador';
+          return await requestAccess(autoName, emailClean, password, 'Administração');
+        } else {
+          return {
+            success: false,
+            message: 'Primeiro acesso detectado! A senha para criar sua conta de Administrador deve ter no mínimo 6 caracteres.',
+          };
+        }
       }
 
-      return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais.' };
+      return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais ou clique em Solicitar Cadastro.' };
     } finally {
       setIsLoading(false);
     }
