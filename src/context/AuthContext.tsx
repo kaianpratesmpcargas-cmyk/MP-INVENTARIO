@@ -1,11 +1,12 @@
 // ==========================================
-// MP CARGAS - Contexto de Autenticação e RBAC (com Sincronização Supabase Direta e Resiliente)
+// MP CARGAS - Contexto de Autenticação e RBAC (Sem Duplicatas, 100% Sincronizado)
 // ==========================================
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { UserProfile, UserRole, PermissionCode } from '../types';
 import { ALL_SYSTEM_PERMISSIONS, DATA_VERSION } from '../mock/initialData';
 import { getSupabaseClient } from '../lib/supabase';
+import { generateValidUUID, isValidUUID } from '../lib/uuid';
 
 interface AuthContextType {
   currentUser: UserProfile | null;
@@ -27,36 +28,39 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const STORAGE_USERS_KEY         = 'mp_cargas_users_v2';
-const STORAGE_CURRENT_USER_KEY  = 'mp_cargas_current_user_v2';
+const STORAGE_USERS_KEY         = 'mp_cargas_users_v3';
+const STORAGE_CURRENT_USER_KEY  = 'mp_cargas_current_user_v3';
 const STORAGE_VERSION_KEY       = 'mp_cargas_data_version';
 
-function ensureCleanStorage() {
-  try {
-    const storedVersion = localStorage.getItem(STORAGE_VERSION_KEY);
-    if (storedVersion !== DATA_VERSION) {
-      const keysToRemove: string[] = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith('mp_cargas_')) {
-          keysToRemove.push(key);
-        }
-      }
-      keysToRemove.forEach(k => localStorage.removeItem(k));
-      localStorage.setItem(STORAGE_VERSION_KEY, DATA_VERSION);
+// Helper para deduplicar lista de usuários por email
+function deduplicateUsers(userList: UserProfile[]): UserProfile[] {
+  const map = new Map<string, UserProfile>();
+  for (const u of userList) {
+    if (!u || !u.email) continue;
+    const cleanEmail = u.email.trim().toLowerCase();
+    const existing = map.get(cleanEmail);
+    if (!existing) {
+      map.set(cleanEmail, { ...u, email: cleanEmail });
+    } else {
+      // Mescla priorizando dados mais recentes ou status ATIVO
+      map.set(cleanEmail, {
+        ...existing,
+        ...u,
+        email: cleanEmail,
+        status: (existing.status === 'ATIVO' || u.status === 'ATIVO') ? 'ATIVO' : u.status,
+        role: (existing.role === 'ADMINISTRADOR' || u.role === 'ADMINISTRADOR') ? 'ADMINISTRADOR' : u.role,
+        updated_at: new Date().toISOString(),
+      });
     }
-  } catch (e) {
-    console.warn('localStorage não disponível:', e);
   }
+  return Array.from(map.values());
 }
-
-ensureCleanStorage();
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<UserProfile[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_USERS_KEY);
-      return saved ? JSON.parse(saved) : [];
+      return saved ? deduplicateUsers(JSON.parse(saved)) : [];
     } catch {
       return [];
     }
@@ -75,29 +79,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Carrega perfis do Supabase na inicialização
-  useEffect(() => {
-    const fetchCloudProfiles = async () => {
-      const supabase = getSupabaseClient();
-      if (!supabase) return;
+  // Carrega e sincroniza usuários do Supabase
+  const syncProfilesFromSupabase = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
 
-      try {
-        const { data, error } = await supabase.from('profiles').select('*');
-        if (!error && data && data.length > 0) {
-          setUsers(data as UserProfile[]);
-        }
-      } catch (err) {
-        console.warn('Erro ao carregar perfis do Supabase:', err);
+    try {
+      const { data, error } = await supabase.from('profiles').select('*');
+      if (!error && data && data.length > 0) {
+        setUsers(prev => deduplicateUsers([...data, ...prev]));
       }
-    };
-
-    fetchCloudProfiles();
+    } catch (err) {
+      console.warn('Erro ao carregar perfis do Supabase:', err);
+    }
   }, []);
+
+  useEffect(() => {
+    syncProfilesFromSupabase();
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    // Escuta alterações de perfis em tempo real
+    const channel = supabase
+      .channel('realtime:profiles')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
+        syncProfilesFromSupabase();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [syncProfilesFromSupabase]);
 
   // Sincroniza usuários no localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(users));
+      localStorage.setItem(STORAGE_USERS_KEY, JSON.stringify(deduplicateUsers(users)));
     } catch (e) {
       console.error('Erro ao salvar usuários:', e);
     }
@@ -119,18 +138,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const pendingUsersCount = users.filter(u => u.status === 'PENDENTE').length;
 
   const canModifyAdmin = (targetUserId: string): boolean => {
-    const target = users.find(u => u.id === targetUserId);
+    const target = users.find(u => u.id === targetUserId || u.email.toLowerCase() === targetUserId.toLowerCase());
     if (!target || target.role !== 'ADMINISTRADOR') return true;
 
     const activeAdmins = users.filter(u => u.role === 'ADMINISTRADOR' && u.status === 'ATIVO');
-    if (activeAdmins.length <= 1 && activeAdmins.some(a => a.id === targetUserId)) {
+    if (activeAdmins.length <= 1 && activeAdmins.some(a => a.id === target.id || a.email === target.email)) {
       return false;
     }
     return true;
   };
 
   /**
-   * Login do Usuário (Multi-Dispositivo)
+   * Login Unificado
    */
   const login = async (email: string, password?: string): Promise<{ success: boolean; message: string }> => {
     setIsLoading(true);
@@ -139,7 +158,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const supabase = getSupabaseClient();
 
-      // 1. Tenta autenticação nativa do Supabase Auth se ativo
+      // 1. Tenta autenticação via Supabase Auth
       if (supabase && password) {
         try {
           const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
@@ -147,96 +166,103 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             password,
           });
 
-          if (!authError && authData.user) {
+          if (!authError && authData?.user) {
+            const userId = authData.user.id;
             const { data: profile } = await supabase
               .from('profiles')
               .select('*')
-              .eq('id', authData.user.id)
+              .eq('id', userId)
               .maybeSingle();
 
+            let userProfile: UserProfile;
             if (profile) {
-              const userProfile = profile as UserProfile;
-              if (userProfile.status === 'PENDENTE') {
-                return { success: false, message: 'Seu cadastro está aguardando aprovação do administrador.' };
-              }
-              if (userProfile.status === 'BLOQUEADO' || userProfile.status === 'RECUSADO') {
-                return { success: false, message: 'Seu acesso está bloqueado ou foi recusado pela administração.' };
-              }
-
-              setCurrentUser(userProfile);
-              setUsers(prev => prev.some(u => u.id === userProfile.id) ? prev : [userProfile, ...prev]);
-              return { success: true, message: `Bem-vindo, ${userProfile.full_name}!` };
-            }
-          }
-        } catch (sbErr) {
-          console.warn('Supabase Auth error:', sbErr);
-        }
-      }
-
-      // 2. Consulta direta na tabela public.profiles do Supabase
-      if (supabase) {
-        try {
-          const { data: dbProfile, error: dbErr } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('email', emailClean)
-            .maybeSingle();
-
-          if (!dbErr && dbProfile) {
-            const userProfile = dbProfile as UserProfile;
-
-            // Se tem senha cadastrada no perfil, valida
-            if (userProfile.password && password && userProfile.password !== password) {
-              return { success: false, message: 'Senha incorreta. Tente novamente.' };
+              userProfile = profile as UserProfile;
+            } else {
+              userProfile = {
+                id: userId,
+                email: emailClean,
+                full_name: authData.user.user_metadata?.full_name || emailClean.split('@')[0].toUpperCase(),
+                role: 'ADMINISTRADOR',
+                status: 'ATIVO',
+                department: authData.user.user_metadata?.department || 'Administração',
+                created_at: new Date().toISOString(),
+              };
+              await supabase.from('profiles').upsert(userProfile);
             }
 
             if (userProfile.status === 'PENDENTE') {
               return { success: false, message: 'Seu cadastro está aguardando aprovação do Administrador.' };
             }
             if (userProfile.status === 'BLOQUEADO' || userProfile.status === 'RECUSADO') {
-              return { success: false, message: 'Seu acesso está bloqueado ou recusado.' };
+              return { success: false, message: 'Seu acesso está bloqueado pela administração.' };
             }
 
-            // Atualiza last_login
-            const updatedProfile = { ...userProfile, last_login: new Date().toISOString() };
-            supabase.from('profiles').update({ last_login: updatedProfile.last_login }).eq('id', userProfile.id).then(() => {});
-
-            setCurrentUser(updatedProfile);
-            setUsers(prev => prev.map(u => u.id === userProfile.id ? updatedProfile : u));
+            setCurrentUser(userProfile);
+            setUsers(prev => deduplicateUsers([userProfile, ...prev]));
             return { success: true, message: `Bem-vindo, ${userProfile.full_name}!` };
           }
-        } catch (err) {
-          console.warn('Erro ao consultar profiles no Supabase:', err);
+        } catch (sbErr) {
+          console.warn('Supabase Auth signIn:', sbErr);
         }
       }
 
-      // 3. Fallback para banco local (caso esteja offline)
-      const foundUser = users.find(u => u.email.toLowerCase() === emailClean);
-      if (foundUser) {
-        if (foundUser.password && password && foundUser.password !== password) {
+      // 2. Tenta autenticação direta na tabela profiles
+      if (supabase) {
+        try {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('email', emailClean)
+            .maybeSingle();
+
+          if (profile) {
+            const userProfile = profile as UserProfile;
+            if (userProfile.password && password && userProfile.password !== password) {
+              return { success: false, message: 'Senha incorreta. Tente novamente.' };
+            }
+            if (userProfile.status === 'PENDENTE') {
+              return { success: false, message: 'Seu cadastro está aguardando aprovação do Administrador.' };
+            }
+            if (userProfile.status === 'BLOQUEADO' || userProfile.status === 'RECUSADO') {
+              return { success: false, message: 'Seu acesso está bloqueado pela administração.' };
+            }
+
+            const updatedProfile = { ...userProfile, last_login: new Date().toISOString() };
+            supabase.from('profiles').upsert(updatedProfile).then(() => {});
+
+            setCurrentUser(updatedProfile);
+            setUsers(prev => deduplicateUsers([updatedProfile, ...prev]));
+            return { success: true, message: `Bem-vindo, ${updatedProfile.full_name}!` };
+          }
+        } catch (err) {
+          console.warn('Busca direta de perfil:', err);
+        }
+      }
+
+      // 3. Consulta nos perfis em memória
+      const localUser = users.find(u => u.email.toLowerCase() === emailClean);
+      if (localUser) {
+        if (localUser.password && password && localUser.password !== password) {
           return { success: false, message: 'Senha incorreta. Tente novamente.' };
         }
-        if (foundUser.status === 'PENDENTE') {
-          return { success: false, message: 'Seu acesso está PENDENTE de aprovação pelo Administrador.' };
+        if (localUser.status === 'PENDENTE') {
+          return { success: false, message: 'Seu cadastro está aguardando aprovação.' };
         }
-        if (foundUser.status === 'BLOQUEADO') {
-          return { success: false, message: 'Usuário BLOQUEADO. Entre em contato com a administração.' };
-        }
-        if (foundUser.status === 'RECUSADO') {
-          return { success: false, message: 'Solicitação de acesso RECUSADA pela administração.' };
+        if (localUser.status === 'BLOQUEADO' || localUser.status === 'RECUSADO') {
+          return { success: false, message: 'Seu acesso está bloqueado.' };
         }
 
-        const updatedUser = { ...foundUser, last_login: new Date().toISOString() };
-        setUsers(prev => prev.map(u => u.id === foundUser.id ? updatedUser : u));
+        const updatedUser = { ...localUser, last_login: new Date().toISOString() };
         setCurrentUser(updatedUser);
+        setUsers(prev => deduplicateUsers(prev.map(u => u.email.toLowerCase() === emailClean ? updatedUser : u)));
         return { success: true, message: `Bem-vindo, ${updatedUser.full_name}!` };
       }
 
       // 4. Se não há nenhum usuário cadastrado no sistema (Primeiro Acesso):
-      // Cria a conta de Administrador automaticamente com o e-mail digitado!
+      // Cria a conta de Administrador automaticamente!
       if (users.length === 0) {
         if (password && password.length >= 6) {
-          const autoName = emailClean.split('@')[0].replace(/[._-]/g, ' ').toUpperCase() || 'Administrador';
+          const autoName = emailClean.split('@')[0].replace(/[._-]/g, ' ').toUpperCase() || 'ADMINISTRADOR';
           return await requestAccess(autoName, emailClean, password, 'Administração');
         } else {
           return {
@@ -246,14 +272,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais ou clique em Solicitar Cadastro.' };
+      return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais.' };
     } finally {
       setIsLoading(false);
     }
   };
 
   /**
-   * Registro / Criação de Conta (Sincronizado na Nuvem)
+   * Registro / Criação de Conta
    */
   const requestAccess = async (
     fullName: string,
@@ -268,15 +294,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const supabase = getSupabaseClient();
       const isFirstUser = users.length === 0;
 
-      // Gera UUID único para compatibilidade PostgreSQL
-      let newUserId = '00000000-0000-0000-0000-' + Date.now().toString().slice(-12).padStart(12, '0');
-      try {
-        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-          newUserId = crypto.randomUUID();
-        }
-      } catch {}
+      let userId = generateValidUUID();
 
-      // Tenta registrar no Supabase Auth
+      // Registra no Supabase Auth
       if (supabase) {
         try {
           const { data: authData } = await supabase.auth.signUp({
@@ -287,17 +307,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             },
           });
           if (authData?.user?.id) {
-            newUserId = authData.user.id;
+            userId = authData.user.id;
           }
         } catch (e) {
-          console.warn('Supabase auth.signUp:', e);
+          console.warn('Supabase auth signUp:', e);
         }
       }
 
-      const newUser: UserProfile = {
-        id: newUserId,
+      const newProfile: UserProfile = {
+        id: userId,
         email: emailClean,
-        password: password, // Guarda para autenticação direta resiliente
+        password: password,
         full_name: fullName.trim(),
         role: isFirstUser ? 'ADMINISTRADOR' : 'CONSULTA',
         status: isFirstUser ? 'ATIVO' : 'PENDENTE',
@@ -305,19 +325,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         created_at: new Date().toISOString(),
       };
 
-      // Salva diretamente na tabela profiles do Supabase
       if (supabase) {
         try {
-          await supabase.from('profiles').upsert(newUser);
+          await supabase.from('profiles').upsert(newProfile);
         } catch (err) {
-          console.warn('Erro ao inserir perfil no Supabase:', err);
+          console.warn('Erro ao salvar profile no Supabase:', err);
         }
       }
 
-      setUsers(prev => [newUser, ...prev]);
+      setUsers(prev => deduplicateUsers([newProfile, ...prev]));
 
       if (isFirstUser) {
-        setCurrentUser(newUser);
+        setCurrentUser(newProfile);
         return {
           success: true,
           message: 'Conta de Administrador criada com sucesso! Você já está conectado.',
@@ -361,28 +380,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const approveUser = async (userId: string, role: UserRole, customPermissions?: PermissionCode[]) => {
     const updatedUsers = users.map(u =>
-      u.id === userId
+      (u.id === userId || u.email === userId)
         ? { ...u, status: 'ATIVO' as const, role, custom_permissions: customPermissions || [], updated_at: new Date().toISOString() }
         : u
     );
-    setUsers(updatedUsers);
+    setUsers(deduplicateUsers(updatedUsers));
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      const target = updatedUsers.find(u => u.id === userId);
+      const target = updatedUsers.find(u => u.id === userId || u.email === userId);
       if (target) await supabase.from('profiles').upsert(target);
     }
   };
 
   const rejectUser = async (userId: string) => {
     const updatedUsers = users.map(u =>
-      u.id === userId ? { ...u, status: 'RECUSADO' as const, updated_at: new Date().toISOString() } : u
+      (u.id === userId || u.email === userId) ? { ...u, status: 'RECUSADO' as const, updated_at: new Date().toISOString() } : u
     );
-    setUsers(updatedUsers);
+    setUsers(deduplicateUsers(updatedUsers));
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      const target = updatedUsers.find(u => u.id === userId);
+      const target = updatedUsers.find(u => u.id === userId || u.email === userId);
       if (target) await supabase.from('profiles').upsert(target);
     }
   };
@@ -392,13 +411,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, message: 'Não é permitido bloquear o único Administrador ativo do sistema.' };
     }
     const updatedUsers = users.map(u =>
-      u.id === userId ? { ...u, status: 'BLOQUEADO' as const, updated_at: new Date().toISOString() } : u
+      (u.id === userId || u.email === userId) ? { ...u, status: 'BLOQUEADO' as const, updated_at: new Date().toISOString() } : u
     );
-    setUsers(updatedUsers);
+    setUsers(deduplicateUsers(updatedUsers));
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      const target = updatedUsers.find(u => u.id === userId);
+      const target = updatedUsers.find(u => u.id === userId || u.email === userId);
       if (target) await supabase.from('profiles').upsert(target);
     }
     return { success: true };
@@ -406,13 +425,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const unblockUser = async (userId: string) => {
     const updatedUsers = users.map(u =>
-      u.id === userId ? { ...u, status: 'ATIVO' as const, updated_at: new Date().toISOString() } : u
+      (u.id === userId || u.email === userId) ? { ...u, status: 'ATIVO' as const, updated_at: new Date().toISOString() } : u
     );
-    setUsers(updatedUsers);
+    setUsers(deduplicateUsers(updatedUsers));
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      const target = updatedUsers.find(u => u.id === userId);
+      const target = updatedUsers.find(u => u.id === userId || u.email === userId);
       if (target) await supabase.from('profiles').upsert(target);
     }
   };
@@ -422,7 +441,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     role: UserRole,
     customPermissions?: PermissionCode[]
   ): Promise<{ success: boolean; message?: string }> => {
-    const target = users.find(u => u.id === userId);
+    const target = users.find(u => u.id === userId || u.email === userId);
     if (!target) return { success: false, message: 'Usuário não encontrado.' };
 
     if (target.role === 'ADMINISTRADOR' && role !== 'ADMINISTRADOR') {
@@ -432,19 +451,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const updatedUsers = users.map(u => {
-      if (u.id === userId) {
+      if (u.id === userId || u.email === userId) {
         const updated = { ...u, role, custom_permissions: customPermissions || u.custom_permissions || [], updated_at: new Date().toISOString() };
-        if (currentUser && currentUser.id === userId) setCurrentUser(updated);
+        if (currentUser && (currentUser.id === userId || currentUser.email === userId)) setCurrentUser(updated);
         return updated;
       }
       return u;
     });
 
-    setUsers(updatedUsers);
+    setUsers(deduplicateUsers(updatedUsers));
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      const updated = updatedUsers.find(u => u.id === userId);
+      const updated = updatedUsers.find(u => u.id === userId || u.email === userId);
       if (updated) await supabase.from('profiles').upsert(updated);
     }
 
@@ -455,7 +474,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!currentUser) return;
     const updated = { ...currentUser, ...data, updated_at: new Date().toISOString() };
     setCurrentUser(updated);
-    setUsers(prev => prev.map(u => u.id === currentUser.id ? updated : u));
+    setUsers(prev => deduplicateUsers(prev.map(u => u.email === currentUser.email ? updated : u)));
 
     const supabase = getSupabaseClient();
     if (supabase) {
