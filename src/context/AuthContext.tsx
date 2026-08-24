@@ -79,7 +79,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Carrega e sincroniza usuários do Supabase
+  // Carrega e sincroniza usuários oficiais do Supabase
   const syncProfilesFromSupabase = useCallback(async () => {
     const supabase = getSupabaseClient();
     if (!supabase) return;
@@ -87,7 +87,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const { data, error } = await supabase.from('profiles').select('*');
       if (!error && data && data.length > 0) {
-        setUsers(prev => deduplicateUsers([...data, ...prev]));
+        const cleanProfiles = deduplicateUsers(data as UserProfile[]);
+        setUsers(cleanProfiles);
+
+        // Se o usuário logado atualmente for um fantasma local inexistente no banco, desloga
+        setCurrentUser(prev => {
+          if (!prev) return null;
+          const match = cleanProfiles.find(u => u.email.toLowerCase() === prev.email.toLowerCase());
+          return match || null;
+        });
       }
     } catch (err) {
       console.warn('Erro ao carregar perfis do Supabase:', err);
