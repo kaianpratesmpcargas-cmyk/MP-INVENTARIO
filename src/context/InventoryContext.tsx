@@ -1055,7 +1055,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const updated: Conferencia = {
       ...conf,
-      status: 'CONCLUIDA',
+      status: 'FINALIZADA',
       data_fim: new Date().toISOString(),
       observacoes: observacoes ? `${conf.observacoes || ''}\n${observacoes}`.trim() : conf.observacoes,
     };
