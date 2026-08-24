@@ -356,19 +356,24 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   // Executar Transferência em Lote
   const handleExecuteBatchTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!batchSetorId || !batchLocalId || batchItems.length === 0) return;
+    if (!batchSetorId || batchItems.length === 0) return;
+
+    const targetSetor = setores.find(s => s.id === batchSetorId);
+    const defaultLocal = locais.find(l => l.setor_id === batchSetorId);
+    const finalLocalId = batchLocalId || defaultLocal?.id || '';
 
     for (const item of batchItems) {
       await transferEquipamento(
         item.equipment.id,
         batchSetorId,
-        batchLocalId,
-        batchResponsavel.trim() || item.equipment.responsavel,
+        finalLocalId,
+        batchResponsavel.trim() || targetSetor?.responsavel_padrao || item.equipment.responsavel,
         batchMotivo.trim() || 'Transferência em Lote via Estação Scanner'
       );
     }
 
     setIsBatchTransferOpen(false);
+    soundService.playSuccess();
     setActionSuccessMsg(`Transferência de ${batchItems.length} equipamentos concluída com sucesso!`);
     setBatchItems([]);
     setTimeout(() => setActionSuccessMsg(null), 4000);
@@ -391,6 +396,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     }
 
     setIsBatchMaintenanceOpen(false);
+    soundService.playWarning();
     setActionSuccessMsg(`${batchItems.length} equipamentos enviados para manutenção!`);
     setBatchItems([]);
     setTimeout(() => setActionSuccessMsg(null), 4000);
@@ -410,6 +416,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     }
 
     setIsBatchStatusOpen(false);
+    soundService.playSuccess();
     setActionSuccessMsg(`Status de ${batchItems.length} equipamentos atualizado para ${batchNewStatus}!`);
     setBatchItems([]);
     setTimeout(() => setActionSuccessMsg(null), 4000);
@@ -1179,15 +1186,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
           </div>
 
           <div>
-            <label className="block font-semibold text-zinc-700 mb-1">Local / Sala de Destino *</label>
+            <label className="block font-semibold text-zinc-700 mb-1">Local / Sala de Destino (Opcional)</label>
             <select
               value={batchLocalId}
               onChange={e => setBatchLocalId(e.target.value)}
-              required
               disabled={!batchSetorId}
               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-yellow-400 disabled:opacity-50"
             >
-              <option value="">Selecione o local...</option>
+              <option value="">Padrão do Setor {filteredLocais.length > 0 ? '' : '(Nenhum local cadastrado)'}</option>
               {filteredLocais.map(l => (
                 <option key={l.id} value={l.id}>{l.nome}</option>
               ))}
