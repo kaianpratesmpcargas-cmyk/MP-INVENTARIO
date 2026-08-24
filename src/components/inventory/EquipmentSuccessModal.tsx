@@ -75,30 +75,33 @@ export const EquipmentSuccessModal: React.FC<EquipmentSuccessModalProps> = ({
           O código patrimonial e a etiqueta Code 128 foram gerados automaticamente.
         </p>
 
-        {/* Card Mock da Etiqueta Física */}
-        <div className="w-full max-w-xs bg-white rounded-2xl border-2 border-dashed border-zinc-300 p-4 mb-6 shadow-sm relative group">
-          <div className="text-[10px] font-black tracking-widest text-zinc-800 uppercase pb-1 border-b border-zinc-200 flex items-center justify-between">
+        {/* Card Mock da Etiqueta Física Térmica P&B */}
+        <div className="w-full max-w-xs bg-white rounded-2xl border-2 border-dashed border-zinc-400 p-4 mb-6 shadow-sm relative group text-center">
+          <div className="bg-black text-white py-1 px-2 rounded-md text-[10px] font-black tracking-widest uppercase mb-2 flex items-center justify-between">
             <span>MP CARGAS</span>
-            <span className="text-yellow-600 font-mono">PATRIMÔNIO</span>
+            <span className="font-mono text-zinc-300">PATRIMÔNIO</span>
           </div>
 
-          <div className="my-2">
-            <div className="font-bold text-xs text-zinc-900 truncate">
+          <div className="my-1 text-center">
+            <div className="font-bold text-xs text-black truncate">
               {equipamento.nome}
             </div>
-            <div className="text-[10px] text-slate-500 font-mono">
-              {equipamento.setor_nome || 'Geral'} • {equipamento.responsavel || '-'}
-            </div>
           </div>
 
-          {/* Barcode Render */}
+          {/* Barcode Render com Quiet Zone */}
           <div className="py-1 bg-white flex justify-center">
             <Barcode
               value={equipamento.codigo_patrimonial}
-              width={1.6}
-              height={40}
-              fontSize={12}
+              width={1.8}
+              height={45}
+              fontSize={11}
+              lineColor="#000000"
             />
+          </div>
+
+          <div className="text-[9px] font-semibold text-black pt-1.5 border-t border-zinc-200 mt-1 flex items-center justify-between">
+            <span className="truncate max-w-[140px]">{equipamento.setor_nome || 'Geral'}</span>
+            <span className="font-mono text-[8px] bg-zinc-100 px-1 py-0.5 rounded text-zinc-800">Térmica P&B</span>
           </div>
         </div>
 

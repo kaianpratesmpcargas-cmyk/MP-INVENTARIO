@@ -261,7 +261,14 @@ export interface ConfiguracoesSistema {
   updated_at: string;
 }
 
-export type LabelTemplate = 'PADRAO_50X30' | 'COMPLETA_70X40' | 'COMPACTA_40X20' | 'FOLHA_A4_GRADE';
+export type LabelTemplate = 
+  | 'PADRAO_50X30' 
+  | 'COMPLETA_70X40' 
+  | 'HIBRIDA_70X40' 
+  | 'HIBRIDA_50X30' 
+  | 'COMPACTA_40X20' 
+  | 'FOLHA_A4_GRADE';
+
 
 export interface LabelPrintOptions {
   template: LabelTemplate;

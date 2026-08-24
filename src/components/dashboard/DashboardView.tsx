@@ -130,11 +130,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </div>
 
       {/* Grid de Cards Métricas de Status */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 sm:gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7 gap-3 sm:gap-4">
         {/* Total */}
         <div
           onClick={() => onNavigate('inventory')}
-          className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-sm hover:shadow-md hover:border-yellow-400/80 cursor-pointer transition-all col-span-2 sm:col-span-1 lg:col-span-1 group"
+          className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-sm hover:shadow-md hover:border-yellow-400/80 cursor-pointer transition-all col-span-2 sm:col-span-1 md:col-span-1 xl:col-span-1 group"
         >
           <div className="flex items-center justify-between text-slate-500 mb-2">
             <span className="text-[11px] font-bold uppercase tracking-wider">TOTAL</span>

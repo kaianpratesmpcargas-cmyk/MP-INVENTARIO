@@ -38,10 +38,24 @@ class SoundManager {
   }
 
   /**
+   * Feedback Háptico (Vibração Tátil para Coletores Android e Celulares)
+   */
+  public triggerHaptic(pattern: number | number[] = 100) {
+    if (typeof window !== 'undefined' && 'navigator' in window && navigator.vibrate) {
+      try {
+        navigator.vibrate(pattern);
+      } catch (e) {
+        // Ignora caso dispositivo não suporte
+      }
+    }
+  }
+
+  /**
    * Bip de Sucesso (Equipamento Encontrado / Ação Concluída)
-   * Timbre cristalino e rápido (alta frequência duplo tom)
+   * Timbre cristalino e rápido + Pulso tátil de 120ms
    */
   public playSuccess() {
+    this.triggerHaptic(120);
     if (!this.enabled) return;
     try {
       const ctx = this.getAudioContext();
@@ -69,9 +83,11 @@ class SoundManager {
   }
 
   /**
-   * Bip de Alerta (Em Manutenção / Pendência)
+   * Bip de Alerta (Em Manutenção / Duplicidade no Lote)
+   * Tom duplo + Vibração dupla
    */
   public playWarning() {
+    this.triggerHaptic([70, 50, 70]);
     if (!this.enabled) return;
     try {
       const ctx = this.getAudioContext();
@@ -100,9 +116,10 @@ class SoundManager {
 
   /**
    * Bip de Erro / Não Encontrado
-   * Tom grave duplo de aviso
+   * Tom grave de aviso + Vibração longa
    */
   public playError() {
+    this.triggerHaptic([200, 80, 200]);
     if (!this.enabled) return;
     try {
       const ctx = this.getAudioContext();
@@ -131,3 +148,4 @@ class SoundManager {
 }
 
 export const soundService = new SoundManager();
+

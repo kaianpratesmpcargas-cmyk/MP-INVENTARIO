@@ -85,12 +85,12 @@ interface InventoryContextType {
 
 const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
 
-const STORAGE_KEY_PREFIX = 'mp_cargas_data_';
+const STORAGE_KEY_PREFIX = 'mp_cargas_data_v2_';
 
 export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser } = useAuth();
 
-  // Estados com persistência local
+  // Estados com persistência local — todos iniciam vazios se não houver dado salvo
   const [configuracoes, setConfiguracoes] = useState<ConfiguracoesSistema>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}config`);
@@ -103,54 +103,54 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [categorias, setCategorias] = useState<Categoria[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}categorias`);
-      return saved ? JSON.parse(saved) : INITIAL_CATEGORIAS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_CATEGORIAS;
+      return [];
     }
   });
 
   const [setores, setSetores] = useState<Setor[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}setores`);
-      return saved ? JSON.parse(saved) : INITIAL_SETORES;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_SETORES;
+      return [];
     }
   });
 
   const [locais, setLocais] = useState<Local[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}locais`);
-      return saved ? JSON.parse(saved) : INITIAL_LOCAIS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_LOCAIS;
+      return [];
     }
   });
 
   const [equipamentos, setEquipamentos] = useState<Equipamento[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}equipamentos`);
-      return saved ? JSON.parse(saved) : INITIAL_EQUIPAMENTOS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_EQUIPAMENTOS;
+      return [];
     }
   });
 
   const [movimentacoes, setMovimentacoes] = useState<Movimentacao[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}movimentacoes`);
-      return saved ? JSON.parse(saved) : INITIAL_MOVIMENTACOES;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_MOVIMENTACOES;
+      return [];
     }
   });
 
   const [manutencoes, setManutencoes] = useState<Manutencao[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}manutencoes`);
-      return saved ? JSON.parse(saved) : INITIAL_MANUTENCOES;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_MANUTENCOES;
+      return [];
     }
   });
 
@@ -166,9 +166,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [auditoria, setAuditoria] = useState<AuditoriaLog[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}auditoria`);
-      return saved ? JSON.parse(saved) : INITIAL_AUDITORIA;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_AUDITORIA;
+      return [];
     }
   });
 

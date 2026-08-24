@@ -2,7 +2,9 @@ import React, { useState, useMemo } from 'react';
 import { useInventory } from '../../context/InventoryContext';
 import { Equipamento, LabelTemplate, LabelPrintOptions } from '../../types';
 import { Barcode } from '../common/Barcode';
+import { Modal } from '../common/Modal';
 import { generateLabelsPDF } from '../../lib/pdf';
+import { generateBatchZPL, downloadZPLFile, copyZPLToClipboard } from '../../lib/zpl';
 import {
   Tags,
   Printer,
@@ -15,6 +17,9 @@ import {
   Sparkles,
   Layers,
   Layout,
+  Code,
+  Copy,
+  QrCode,
 } from 'lucide-react';
 
 interface LabelsViewProps {
@@ -44,11 +49,13 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
   const [includeSerial, setIncludeSerial] = useState(true);
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isZPLModalOpen, setIsZPLModalOpen] = useState(false);
+  const [zplCopied, setZplCopied] = useState(false);
 
   // Filtra equipamentos
   const filteredEquipamentos = useMemo(() => {
     return equipamentos.filter(eq => {
-      if (eq.status === 'BAIXADO') return false; // Não imprime para baixados
+      if (eq.status === 'BAIXADO') return false;
 
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
@@ -100,7 +107,7 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
     copiesPerItem,
   };
 
-  // Gerar e Imprimir
+  // Gerar e Imprimir PDF
   const handlePrint = async () => {
     if (itemsToPrint.length === 0) return;
     setIsGenerating(true);
@@ -132,8 +139,13 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
   // Exemplo para preview
   const sampleEquipment = itemsToPrint.length > 0 ? itemsToPrint[0] : (equipamentos[0] || null);
 
+  const zplOutput = useMemo(() => {
+    const list = itemsToPrint.length > 0 ? itemsToPrint : (sampleEquipment ? [sampleEquipment] : []);
+    return generateBatchZPL(list, configuracoes.empresa_nome, template, copiesPerItem);
+  }, [itemsToPrint, sampleEquipment, configuracoes.empresa_nome, template, copiesPerItem]);
+
   return (
-    <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn">
+    <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn pb-12">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -142,19 +154,29 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
             <span>Gerador & Impressão de Etiquetas</span>
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Gere etiquetas industriais em padrão <strong>Code 128</strong> individuais ou em lote para impressoras térmicas ou folhas A4.
+            Gere etiquetas industriais em padrão <strong>Code 128 + QR Code Híbrido</strong> para impressoras térmicas P&B (PDF ou ZPL direto) ou folhas A4.
           </p>
         </div>
 
-        {/* Botão de Impressão Rápida */}
-        <div className="flex items-center gap-2.5">
+        {/* Botões de Ação Superior */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setIsZPLModalOpen(true)}
+            disabled={itemsToPrint.length === 0}
+            className="px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-yellow-400 font-mono font-bold text-xs flex items-center gap-1.5 transition-all disabled:opacity-40"
+            title="Exportar comandos nativos para impressoras Zebra"
+          >
+            <Code className="w-4 h-4" />
+            <span>EXPORTAR ZPL ({itemsToPrint.length})</span>
+          </button>
+
           <button
             onClick={handleDownloadPDF}
             disabled={itemsToPrint.length === 0 || isGenerating}
-            className="px-4 py-2.5 rounded-xl bg-zinc-900 hover:bg-black text-white font-bold text-xs flex items-center gap-2 transition-all disabled:opacity-40"
+            className="px-3.5 py-2.5 rounded-xl bg-zinc-900 hover:bg-black text-white font-bold text-xs flex items-center gap-1.5 transition-all disabled:opacity-40"
           >
             <FileDown className="w-4 h-4 text-yellow-400" />
-            <span>GERAR PDF ({itemsToPrint.length * copiesPerItem})</span>
+            <span>BAIXAR PDF ({itemsToPrint.length * copiesPerItem})</span>
           </button>
 
           <button
@@ -179,11 +201,11 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
                 <Layout className="w-4 h-4 text-yellow-500" />
                 <span>1. Formato & Modelo da Etiqueta</span>
               </span>
-              <span className="text-[11px] text-slate-400 font-mono">Code 128 Barcode</span>
+              <span className="text-[11px] text-slate-400 font-mono">Padrão Térmico P&B / Zebra</span>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {/* Modelo 1 */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {/* Modelo 1: Padrão 50x30 */}
               <div
                 onClick={() => setTemplate('PADRAO_50X30')}
                 className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all text-center ${
@@ -192,12 +214,46 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
                     : 'border-slate-200 hover:border-slate-300 bg-white'
                 }`}
               >
-                <div className="font-bold text-xs text-zinc-900 mb-1">Padrão MP</div>
+                <div className="font-bold text-xs text-zinc-900 mb-1">Padrão MP (Code 128)</div>
                 <div className="text-[10px] text-slate-500 font-mono">50 x 30 mm</div>
                 <div className="text-[9px] text-yellow-700 font-semibold mt-1">Térmica / Rolo</div>
               </div>
 
-              {/* Modelo 2 */}
+              {/* Modelo 2: Híbrida 70x40 (Code 128 + QR Code) */}
+              <div
+                onClick={() => setTemplate('HIBRIDA_70X40')}
+                className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all text-center ${
+                  template === 'HIBRIDA_70X40'
+                    ? 'border-yellow-400 bg-amber-50/50 shadow-sm'
+                    : 'border-slate-200 hover:border-slate-300 bg-white'
+                }`}
+              >
+                <div className="font-bold text-xs text-zinc-900 mb-1 flex items-center justify-center gap-1">
+                  <QrCode className="w-3 h-3 text-yellow-600" />
+                  <span>Híbrida 70x40</span>
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">70 x 40 mm</div>
+                <div className="text-[9px] text-emerald-600 font-semibold mt-1">Barras + QR Code</div>
+              </div>
+
+              {/* Modelo 3: Híbrida 50x30 */}
+              <div
+                onClick={() => setTemplate('HIBRIDA_50X30')}
+                className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all text-center ${
+                  template === 'HIBRIDA_50X30'
+                    ? 'border-yellow-400 bg-amber-50/50 shadow-sm'
+                    : 'border-slate-200 hover:border-slate-300 bg-white'
+                }`}
+              >
+                <div className="font-bold text-xs text-zinc-900 mb-1 flex items-center justify-center gap-1">
+                  <QrCode className="w-3 h-3 text-yellow-600" />
+                  <span>Híbrida 50x30</span>
+                </div>
+                <div className="text-[10px] text-slate-500 font-mono">50 x 30 mm</div>
+                <div className="text-[9px] text-emerald-600 font-semibold mt-1">Barras + Mini QR</div>
+              </div>
+
+              {/* Modelo 4: Detalhada 70x40 */}
               <div
                 onClick={() => setTemplate('COMPLETA_70X40')}
                 className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all text-center ${
@@ -206,12 +262,12 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
                     : 'border-slate-200 hover:border-slate-300 bg-white'
                 }`}
               >
-                <div className="font-bold text-xs text-zinc-900 mb-1">Detalhada</div>
+                <div className="font-bold text-xs text-zinc-900 mb-1">Detalhada S/N</div>
                 <div className="text-[10px] text-slate-500 font-mono">70 x 40 mm</div>
                 <div className="text-[9px] text-slate-500 mt-1">Com S/N e Setor</div>
               </div>
 
-              {/* Modelo 3 */}
+              {/* Modelo 5: Compacta 40x20 */}
               <div
                 onClick={() => setTemplate('COMPACTA_40X20')}
                 className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all text-center ${
@@ -225,7 +281,7 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
                 <div className="text-[9px] text-slate-500 mt-1">Mini Ativos</div>
               </div>
 
-              {/* Modelo 4 */}
+              {/* Modelo 6: Folha A4 Grade */}
               <div
                 onClick={() => setTemplate('FOLHA_A4_GRADE')}
                 className={`p-3.5 rounded-xl border-2 cursor-pointer transition-all text-center ${
@@ -234,7 +290,7 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
                     : 'border-slate-200 hover:border-slate-300 bg-white'
                 }`}
               >
-                <div className="font-bold text-xs text-zinc-900 mb-1">Folha A4</div>
+                <div className="font-bold text-xs text-zinc-900 mb-1">Folha A4 (Grade)</div>
                 <div className="text-[10px] text-slate-500 font-mono">Grade 24 un</div>
                 <div className="text-[9px] text-blue-600 font-semibold mt-1">Pimaco / Laser</div>
               </div>
@@ -261,7 +317,7 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
             </div>
           </div>
 
-          {/* Card 2: Seleção de Equipamentos (Tabela Rápida) */}
+          {/* Card 2: Seleção de Equipamentos */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-sm space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
@@ -368,43 +424,67 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
 
         {/* Coluna 3: Pré-Visualização Visual da Etiqueta */}
         <div className="space-y-4">
-          <div className="bg-zinc-900 text-white p-5 rounded-2xl border border-zinc-800 shadow-lg sticky top-24">
+          <div className="bg-zinc-900 text-white p-5 rounded-2xl border border-zinc-800 shadow-lg sticky top-20">
             <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
               <span className="text-xs font-bold uppercase tracking-wider text-yellow-400 flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>Pré-Visualização Real</span>
+                <span>Prévia Térmica P&B</span>
               </span>
               <span className="text-[10px] text-zinc-400 font-mono">{template}</span>
             </div>
 
             {sampleEquipment ? (
               <div className="flex flex-col items-center">
-                {/* Mock Visual da Etiqueta */}
-                <div className="w-full max-w-[260px] bg-white text-black rounded-xl p-3.5 shadow-2xl border-2 border-dashed border-zinc-400 text-center transition-all animate-fadeIn">
-                  {/* Topo Amarelo MP */}
-                  <div className="bg-yellow-400 text-black py-1 px-2 rounded font-black text-xs uppercase tracking-wider mb-2">
+                {/* Mock Visual da Etiqueta Monocromática */}
+                <div className="w-full max-w-[280px] bg-white text-black rounded-xl p-3.5 shadow-2xl border-2 border-dashed border-zinc-400 text-center transition-all animate-fadeIn">
+                  {/* Topo Preto Sólido */}
+                  <div className="bg-black text-white py-1 px-2 rounded-md font-black text-xs uppercase tracking-wider mb-1.5 shadow-xs">
                     {configuracoes.empresa_nome}
                   </div>
 
                   {/* Nome do Equipamento */}
-                  <div className="font-bold text-xs text-zinc-900 truncate mb-1">
+                  <div className="font-bold text-xs text-black truncate mb-1">
                     {sampleEquipment.nome}
                   </div>
 
-                  {/* Barcode Code 128 */}
-                  <div className="py-1 flex justify-center">
-                    <Barcode
-                      value={sampleEquipment.codigo_patrimonial}
-                      width={1.6}
-                      height={40}
-                      fontSize={11}
-                    />
-                  </div>
+                  {/* Renderização Híbrida ou Padrão */}
+                  {template.startsWith('HIBRIDA') ? (
+                    <div className="flex items-center justify-between gap-1 py-1 bg-white">
+                      <div className="flex-1 overflow-hidden">
+                        <Barcode
+                          value={sampleEquipment.codigo_patrimonial}
+                          width={1.5}
+                          height={40}
+                          fontSize={10}
+                          lineColor="#000000"
+                        />
+                      </div>
+                      <div className="w-12 h-12 border border-black rounded p-1 flex flex-col items-center justify-center font-mono text-[7px] text-black">
+                        <QrCode className="w-6 h-6 text-black" />
+                        <span>QR-2D</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-1 bg-white flex justify-center overflow-hidden">
+                      <Barcode
+                        value={sampleEquipment.codigo_patrimonial}
+                        width={1.8}
+                        height={45}
+                        fontSize={11}
+                        lineColor="#000000"
+                      />
+                    </div>
+                  )}
 
-                  {/* Detalhes de Rodapé */}
-                  <div className="text-[9px] text-zinc-500 pt-1 border-t border-zinc-200 mt-1 font-sans">
-                    {sampleEquipment.setor_nome || 'MP CARGAS'} • Resp: {sampleEquipment.responsavel || '-'}
+                  {/* Rodapé em Preto Puro */}
+                  <div className="text-[9px] font-semibold text-black pt-1.5 border-t border-zinc-300 mt-1 font-sans flex items-center justify-between">
+                    <span className="truncate max-w-[130px]">{sampleEquipment.setor_nome || 'MP CARGAS'}</span>
+                    <span className="font-mono text-[8px] bg-zinc-100 px-1 py-0.5 rounded text-zinc-800">P&B Térmica</span>
                   </div>
+                </div>
+
+                <div className="mt-3 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[10px] text-center font-medium">
+                  ✓ Alto Contraste & Quiet Zone (100% Leitor/Bipador)
                 </div>
 
                 <div className="mt-4 text-center text-xs text-zinc-400">
@@ -424,14 +504,25 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
                     <span>IMPRIMIR AGORA</span>
                   </button>
 
-                  <button
-                    onClick={handleDownloadPDF}
-                    disabled={itemsToPrint.length === 0 || isGenerating}
-                    className="w-full py-2 px-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs flex items-center justify-center gap-2 transition-colors disabled:opacity-40"
-                  >
-                    <FileDown className="w-3.5 h-3.5 text-yellow-400" />
-                    <span>BAIXAR ARQUIVO PDF</span>
-                  </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleDownloadPDF}
+                      disabled={itemsToPrint.length === 0 || isGenerating}
+                      className="py-2 px-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40"
+                    >
+                      <FileDown className="w-3.5 h-3.5 text-yellow-400" />
+                      <span>PDF</span>
+                    </button>
+
+                    <button
+                      onClick={() => setIsZPLModalOpen(true)}
+                      disabled={itemsToPrint.length === 0}
+                      className="py-2 px-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-yellow-400 font-mono font-bold text-xs flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40"
+                    >
+                      <Code className="w-3.5 h-3.5" />
+                      <span>ZPL ZEBRA</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -442,6 +533,52 @@ export const LabelsView: React.FC<LabelsViewProps> = ({ initialSelectedIds = [] 
           </div>
         </div>
       </div>
+
+      {/* Modal de Código ZPL */}
+      <Modal
+        isOpen={isZPLModalOpen}
+        onClose={() => setIsZPLModalOpen(false)}
+        title={`Comandos ZPL (Zebra) - ${itemsToPrint.length} Ativo(s)`}
+        maxWidth="lg"
+      >
+        <div className="space-y-3 text-xs">
+          <p className="text-slate-500">
+            Comandos ZPL nativos prontos para impressão industrial em alta velocidade em impressoras Zebra ZT230, ZD220, ZD420, Argox e Elgin.
+          </p>
+
+          <div className="relative bg-zinc-950 text-emerald-400 p-4 rounded-2xl font-mono text-[11px] max-h-72 overflow-y-auto border border-zinc-800 shadow-inner">
+            <pre className="whitespace-pre-wrap">{zplOutput}</pre>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={async () => {
+                const ok = await copyZPLToClipboard(zplOutput);
+                if (ok) {
+                  setZplCopied(true);
+                  setTimeout(() => setZplCopied(false), 2500);
+                }
+              }}
+              className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-bold flex items-center gap-1.5"
+            >
+              <Copy className="w-3.5 h-3.5 text-yellow-400" />
+              <span>{zplCopied ? 'COPIADO!' : 'COPIAR CÓDIGO ZPL'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                downloadZPLFile(`etiquetas_mp_cargas_${itemsToPrint.length}_itens.zpl`, zplOutput);
+              }}
+              className="px-4 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold flex items-center gap-1.5 shadow-sm"
+            >
+              <FileDown className="w-3.5 h-3.5" />
+              <span>BAIXAR ARQUIVO .ZPL</span>
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

@@ -3,8 +3,8 @@
 // ==========================================
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { UserProfile, UserRole, UserStatus, PermissionCode } from '../types';
-import { INITIAL_USERS } from '../mock/initialData';
+import type { UserProfile, UserRole, PermissionCode } from '../types';
+import { ALL_SYSTEM_PERMISSIONS, DATA_VERSION } from '../mock/initialData';
 import { getSupabaseClient } from '../lib/supabase';
 
 interface AuthContextType {
@@ -27,25 +27,56 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const STORAGE_USERS_KEY = 'mp_cargas_users_v1';
-const STORAGE_CURRENT_USER_KEY = 'mp_cargas_current_user_v1';
+const STORAGE_USERS_KEY         = 'mp_cargas_users_v2';
+const STORAGE_CURRENT_USER_KEY  = 'mp_cargas_current_user_v2';
+const STORAGE_VERSION_KEY       = 'mp_cargas_data_version';
+
+// ──────────────────────────────────────────
+// Limpa localStorage se versão dos dados for antiga
+// ──────────────────────────────────────────
+function ensureCleanStorage() {
+  try {
+    const storedVersion = localStorage.getItem(STORAGE_VERSION_KEY);
+    if (storedVersion !== DATA_VERSION) {
+      // Limpa todas as chaves do sistema MP CARGAS
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('mp_cargas_')) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(k => localStorage.removeItem(k));
+      localStorage.setItem(STORAGE_VERSION_KEY, DATA_VERSION);
+    }
+  } catch (e) {
+    console.warn('localStorage não disponível:', e);
+  }
+}
+
+// Executa na inicialização do módulo
+ensureCleanStorage();
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<UserProfile[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_USERS_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_USERS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_USERS;
+      return [];
     }
   });
 
+  // SEMPRE inicia sem sessão — login obrigatório
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_CURRENT_USER_KEY);
-      return saved ? JSON.parse(saved) : INITIAL_USERS[0]; // Inicia com o Admin Kaian por padrão para demonstração imediata
+      if (!saved) return null;
+      const parsed: UserProfile = JSON.parse(saved);
+      // Valida se o usuário ainda existe e está ativo
+      return parsed ?? null;
     } catch {
-      return INITIAL_USERS[0];
+      return null;
     }
   });
 
@@ -73,7 +104,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [currentUser]);
 
-  // Conta usuários pendentes
   const pendingUsersCount = users.filter(u => u.status === 'PENDENTE').length;
 
   /**
@@ -86,7 +116,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const activeAdmins = users.filter(u => u.role === 'ADMINISTRADOR' && u.status === 'ATIVO');
     if (activeAdmins.length <= 1 && activeAdmins.some(a => a.id === targetUserId)) {
-      return false; // É o último administrador ativo!
+      return false;
     }
     return true;
   };
@@ -103,7 +133,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         try {
           const { data, error } = await supabase.auth.signInWithPassword({ email, password });
           if (!error && data.user) {
-            // Busca profile no Supabase
             const { data: profile } = await supabase
               .from('profiles')
               .select('*')
@@ -122,11 +151,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           }
         } catch (sbErr) {
-          console.warn('Fallback para autenticação local devido a:', sbErr);
+          console.warn('Fallback para autenticação local:', sbErr);
         }
       }
 
-      // 2. Autenticação Local / Offline Engine
+      // 2. Autenticação local (offline engine)
       const foundUser = users.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
 
       if (!foundUser) {
@@ -134,33 +163,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (foundUser.status === 'PENDENTE') {
-        return { success: false, message: 'Seu acesso ainda está PENDENTE de aprovação pelo Administrador.' };
+        return { success: false, message: 'Seu acesso está PENDENTE de aprovação pelo Administrador.' };
       }
 
       if (foundUser.status === 'BLOQUEADO') {
-        return { success: false, message: 'Este usuário está BLOQUEADO. Entre em contato com a TI/Administração.' };
+        return { success: false, message: 'Usuário BLOQUEADO. Entre em contato com a administração.' };
       }
 
       if (foundUser.status === 'RECUSADO') {
-        return { success: false, message: 'A solicitação de acesso deste e-mail foi RECUSADA pela administração.' };
+        return { success: false, message: 'Solicitação de acesso RECUSADA pela administração.' };
       }
 
-      const updatedUser = {
-        ...foundUser,
-        last_login: new Date().toISOString(),
-      };
-
+      const updatedUser = { ...foundUser, last_login: new Date().toISOString() };
       setUsers(prev => prev.map(u => u.id === foundUser.id ? updatedUser : u));
       setCurrentUser(updatedUser);
 
-      return { success: true, message: `Bem-vindo de volta, ${updatedUser.full_name}!` };
+      return { success: true, message: `Bem-vindo, ${updatedUser.full_name}!` };
     } finally {
       setIsLoading(false);
     }
   };
 
   /**
-   * Solicitação de Acesso (Novo Cadastro com status PENDENTE)
+   * Primeiro acesso / Solicitação de Registro
+   * Se não há NENHUM usuário, o primeiro cadastro recebe perfil ADMINISTRADOR automaticamente.
    */
   const requestAccess = async (
     fullName: string,
@@ -184,30 +210,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await supabase.auth.signUp({
             email: emailClean,
             password,
-            options: {
-              data: { full_name: fullName, department }
-            }
+            options: { data: { full_name: fullName, department } }
           });
         } catch (e) {
-          console.warn('Erro no signUp Supabase (usando local):', e);
+          console.warn('Erro no signUp Supabase:', e);
         }
       }
+
+      const isFirstUser = users.length === 0;
 
       const newUser: UserProfile = {
         id: `user-${Date.now()}`,
         email: emailClean,
         full_name: fullName.trim(),
-        role: 'CONSULTA',
-        status: 'PENDENTE',
-        department: department || 'Geral',
+        // Primeiro usuário do sistema → vira Administrador automaticamente
+        role: isFirstUser ? 'ADMINISTRADOR' : 'CONSULTA',
+        status: isFirstUser ? 'ATIVO' : 'PENDENTE',
+        department: department || '',
         created_at: new Date().toISOString(),
       };
 
       setUsers(prev => [newUser, ...prev]);
 
+      if (isFirstUser) {
+        setCurrentUser(newUser);
+        return {
+          success: true,
+          message: 'Conta criada com sucesso! Você foi definido como Administrador por ser o primeiro usuário do sistema.',
+        };
+      }
+
       return {
         success: true,
-        message: 'Solicitação de acesso enviada com sucesso! Aguarde a aprovação de um Administrador.'
+        message: 'Solicitação enviada! Aguarde a aprovação de um Administrador para acessar o sistema.',
       };
     } finally {
       setIsLoading(false);
@@ -219,135 +254,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    */
   const logout = () => {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      supabase.auth.signOut().catch(() => {});
-    }
+    if (supabase) supabase.auth.signOut().catch(() => {});
     setCurrentUser(null);
   };
 
   /**
-   * Verificador de Permissões
+   * Verificador de Permissões RBAC
    */
   const hasPermission = (code: PermissionCode): boolean => {
     if (!currentUser) return false;
     if (currentUser.status !== 'ATIVO') return false;
-
-    // Administrador tem acesso total irrestrito
     if (currentUser.role === 'ADMINISTRADOR') return true;
 
-    // Permissões customizadas explícitas
     if (currentUser.custom_permissions && currentUser.custom_permissions.includes(code)) {
       return true;
     }
 
-    // Permissões padrão baseadas no Role
     switch (currentUser.role) {
       case 'CONFERENTE':
-        return [
-          'view_inventory',
-          'scan_barcode',
-          'conduct_conference',
-          'transfer_equipment',
-          'generate_labels',
-          'print_labels',
-          'view_reports'
-        ].includes(code);
-
+        return ['view_inventory', 'scan_barcode', 'conduct_conference', 'transfer_equipment', 'generate_labels', 'print_labels', 'view_reports'].includes(code);
       case 'MANUTENÇÃO':
-        return [
-          'view_inventory',
-          'scan_barcode',
-          'open_maintenance',
-          'finish_maintenance',
-          'transfer_equipment',
-          'view_reports'
-        ].includes(code);
-
+        return ['view_inventory', 'scan_barcode', 'open_maintenance', 'finish_maintenance', 'transfer_equipment', 'view_reports'].includes(code);
       case 'CONSULTA':
       default:
-        return [
-          'view_inventory',
-          'scan_barcode',
-          'view_reports'
-        ].includes(code);
+        return ['view_inventory', 'scan_barcode', 'view_reports'].includes(code);
     }
   };
 
-  /**
-   * Aprovar Usuário Pendente
-   */
   const approveUser = async (userId: string, role: UserRole, customPermissions?: PermissionCode[]) => {
-    setUsers(prev => prev.map(u => {
-      if (u.id === userId) {
-        return {
-          ...u,
-          status: 'ATIVO',
-          role,
-          custom_permissions: customPermissions || [],
-          updated_at: new Date().toISOString()
-        };
-      }
-      return u;
-    }));
+    setUsers(prev => prev.map(u =>
+      u.id === userId
+        ? { ...u, status: 'ATIVO', role, custom_permissions: customPermissions || [], updated_at: new Date().toISOString() }
+        : u
+    ));
   };
 
-  /**
-   * Recusar Usuário Pendente
-   */
   const rejectUser = async (userId: string) => {
-    setUsers(prev => prev.map(u => {
-      if (u.id === userId) {
-        return {
-          ...u,
-          status: 'RECUSADO',
-          updated_at: new Date().toISOString()
-        };
-      }
-      return u;
-    }));
+    setUsers(prev => prev.map(u =>
+      u.id === userId ? { ...u, status: 'RECUSADO', updated_at: new Date().toISOString() } : u
+    ));
   };
 
-  /**
-   * Bloquear Usuário Ativo
-   */
   const blockUser = async (userId: string): Promise<{ success: boolean; message?: string }> => {
     if (!canModifyAdmin(userId)) {
-      return { success: false, message: 'Ação bloqueada: Não é permitido desativar ou bloquear o último Administrador ativo do sistema.' };
+      return { success: false, message: 'Não é permitido bloquear o único Administrador ativo do sistema.' };
     }
-
-    setUsers(prev => prev.map(u => {
-      if (u.id === userId) {
-        return {
-          ...u,
-          status: 'BLOQUEADO',
-          updated_at: new Date().toISOString()
-        };
-      }
-      return u;
-    }));
-
+    setUsers(prev => prev.map(u =>
+      u.id === userId ? { ...u, status: 'BLOQUEADO', updated_at: new Date().toISOString() } : u
+    ));
     return { success: true };
   };
 
-  /**
-   * Desbloquear Usuário
-   */
   const unblockUser = async (userId: string) => {
-    setUsers(prev => prev.map(u => {
-      if (u.id === userId) {
-        return {
-          ...u,
-          status: 'ATIVO',
-          updated_at: new Date().toISOString()
-        };
-      }
-      return u;
-    }));
+    setUsers(prev => prev.map(u =>
+      u.id === userId ? { ...u, status: 'ATIVO', updated_at: new Date().toISOString() } : u
+    ));
   };
 
-  /**
-   * Atualizar Perfil e Permissões Customizadas
-   */
   const updateUserRoleAndPermissions = async (
     userId: string,
     role: UserRole,
@@ -358,22 +321,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (target.role === 'ADMINISTRADOR' && role !== 'ADMINISTRADOR') {
       if (!canModifyAdmin(userId)) {
-        return { success: false, message: 'Ação bloqueada: Não é permitido rebaixar o único Administrador ativo.' };
+        return { success: false, message: 'Não é permitido rebaixar o único Administrador ativo.' };
       }
     }
 
     setUsers(prev => prev.map(u => {
       if (u.id === userId) {
-        const updated = {
-          ...u,
-          role,
-          custom_permissions: customPermissions || u.custom_permissions || [],
-          updated_at: new Date().toISOString()
-        };
-        // Se for o próprio usuário logado, atualiza o estado
-        if (currentUser && currentUser.id === userId) {
-          setCurrentUser(updated);
-        }
+        const updated = { ...u, role, custom_permissions: customPermissions || u.custom_permissions || [], updated_at: new Date().toISOString() };
+        if (currentUser && currentUser.id === userId) setCurrentUser(updated);
         return updated;
       }
       return u;
@@ -382,9 +337,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true };
   };
 
-  /**
-   * Atualizar Perfil Pessoal do Usuário Logado
-   */
   const updateCurrentUserProfile = async (data: Partial<UserProfile>) => {
     if (!currentUser) return;
     const updated = { ...currentUser, ...data, updated_at: new Date().toISOString() };
@@ -419,8 +371,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth deve ser utilizado dentro de um AuthProvider');
-  }
+  if (!context) throw new Error('useAuth deve ser utilizado dentro de um AuthProvider');
   return context;
 };

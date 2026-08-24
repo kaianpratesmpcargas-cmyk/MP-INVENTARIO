@@ -1,15 +1,53 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --color-brand-black: #111111;
+  --color-brand-dark: #18181B;
+  --color-brand-gray: #27272A;
+  --color-brand-yellow: #FFD100;
+  --color-brand-yellowHover: #E5BC00;
+  --color-brand-yellowLight: #FFFBEB;
+  --color-brand-yellowBorder: #FDE047;
+  --color-brand-green: #22C55E;
+  --color-brand-red: #EF4444;
+  --color-brand-orange: #F59E0B;
+  --color-brand-blue: #3B82F6;
+  --color-brand-purple: #8B5CF6;
+  
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, Menlo, Monaco, Consolas, monospace;
+
+  --shadow-premium: 0 4px 20px -2px rgba(0, 0, 0, 0.05), 0 2px 6px -1px rgba(0, 0, 0, 0.03);
+  --shadow-premium-hover: 0 10px 25px -3px rgba(0, 0, 0, 0.08), 0 4px 10px -2px rgba(0, 0, 0, 0.04);
+  --shadow-yellow-glow: 0 0 16px rgba(255, 209, 0, 0.4);
+}
 
 @layer base {
   * {
     border-color: #E2E8F0;
   }
   
-  body {
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  html {
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background-color: #F8FAFC;
+    color: #0F172A;
+    min-height: 100vh;
+  }
+}
+
+/* Custom Shadows and Theme Tokens */
+.shadow-yellow-glow {
+  box-shadow: 0 0 16px rgba(255, 209, 0, 0.4);
+}
+
+.shadow-xs {
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
 }
 
 /* Custom Scrollbars */
@@ -62,6 +100,15 @@
 }
 
 /* Animation utilities */
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
 @keyframes pulse-yellow {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(255, 209, 0, 0.4);
@@ -75,20 +122,3 @@
   animation: pulse-yellow 2s infinite;
 }
 
-@keyframes flash-green {
-  0% { background-color: rgba(34, 197, 94, 0.25); border-color: #22C55E; }
-  100% { background-color: transparent; }
-}
-
-.animate-flash-green {
-  animation: flash-green 1s ease-out;
-}
-
-@keyframes flash-red {
-  0% { background-color: rgba(239, 68, 68, 0.25); border-color: #EF4444; }
-  100% { background-color: transparent; }
-}
-
-.animate-flash-red {
-  animation: flash-red 1s ease-out;
-}
