@@ -124,10 +124,13 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   const [zplCopied, setZplCopied] = useState(false);
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
 
-  // Câmera Scanner
+  // Câmera Scanner & Controle Anti-Loop de Bipagem
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+  const lastScannedCodeRef = useRef<string>('');
+  const lastScanTimestampRef = useRef<number>(0);
+  const isProcessingRef = useRef<boolean>(false);
 
   // Input Ref com Auto-focus permanente
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -144,10 +147,23 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     return () => clearInterval(interval);
   }, [isCameraActive, isBatchTransferOpen, isBatchMaintenanceOpen, isBatchStatusOpen, isBatchZPLOpen]);
 
-  // Executa processamento do código de barras (com consulta direta ao Supabase para busca universal)
-  const handleProcessBarcode = async (code: string) => {
+  // Executa processamento do código de barras (com trava de 1 único bipe e consulta direta)
+  const handleProcessBarcode = async (code: string, isFromCamera: boolean = false) => {
     const rawCode = code.trim().replace(/[\r\n\t]/g, '');
     if (!rawCode) return;
+
+    const now = Date.now();
+
+    // TRAVA ANTI-REPETIÇÃO: Se for câmera, bloqueia leituras múltiplas no mesmo segundo
+    if (isFromCamera) {
+      if (isProcessingRef.current) return;
+      if (now - lastScanTimestampRef.current < 2500 && rawCode === lastScannedCodeRef.current) return;
+      if (now - lastScanTimestampRef.current < 1200) return;
+    }
+
+    isProcessingRef.current = true;
+    lastScanTimestampRef.current = now;
+    lastScannedCodeRef.current = rawCode;
 
     setScannedCode(rawCode);
     const nowTime = new Date().toLocaleTimeString('pt-BR');
@@ -216,13 +232,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     }
 
     setScanInput('');
+    isProcessingRef.current = false;
   };
 
   // Submit do form do leitor USB
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (scanInput.trim()) {
-      handleProcessBarcode(scanInput);
+      handleProcessBarcode(scanInput, false);
     }
   };
 
@@ -232,6 +249,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     setFoundEquipment(null);
     setScannedCode('');
     setScanInput('');
+    lastScannedCodeRef.current = '';
+    lastScanTimestampRef.current = 0;
     keepFocus();
   };
 
@@ -499,7 +518,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
             { facingMode: 'environment' },
             config,
             (decodedText) => {
-              handleProcessBarcode(decodedText);
+              handleProcessBarcode(decodedText, true);
             },
             () => {}
           );
