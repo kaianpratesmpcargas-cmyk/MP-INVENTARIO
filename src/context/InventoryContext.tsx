@@ -1210,7 +1210,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('configuracoes').upsert({ id: 'config-main', ...updated });
+      const configUUID = '00000000-0000-0000-0000-000000000001';
+      await supabase.from('configuracoes').upsert({ id: configUUID, ...updated });
       await fetchCloudData();
     }
   };
